@@ -1,0 +1,56 @@
+# Rust / Cargo build artifacts
+/target/
+**/*.rs.bk
+*.pdb
+
+# Executables & Binaries
+*.exe
+*.dll
+*.so
+*.dylib
+bin/*
+!bin/.gitkeep
+!/setup.exe
+
+# Public Release folder (for distributing user download)
+!/Release/
+!/Release/**
+!/release/
+!/release/**
+
+# Internal Agent Notes
+AGENT.md
+
+# Application runtime configuration & temporary folders
+ghita_config.json
+.ghita_temp/
+
+# Downloaded media & partial download files (if saved in project folder)
+*.mp3
+*.wav
+*.m4a
+*.opus
+*.flac
+*.webm
+*.ogg
+*.part
+*.ytdl
+
+# IDE & Editor settings
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+*.swp
+*~
+
+# Operating System files
+Thumbs.db
+Desktop.ini
+.DS_Store
+$RECYCLE.BIN/
+ehthumbs.db
+ehthumbs_vista.db
+
+# Logs
+*.log

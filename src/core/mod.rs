@@ -1,0 +1,9 @@
+pub mod batch;
+pub mod config;
+pub mod downloader;
+pub mod platform;
+pub mod spotify;
+pub mod suno;
+pub mod tagger;
+pub mod transcoder;
+pub mod youtube;
