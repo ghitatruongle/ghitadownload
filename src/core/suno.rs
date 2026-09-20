@@ -12,6 +12,7 @@ pub struct SunoTrackMeta {
     pub cover_url: Option<String>,
 }
 
+#[derive(Default)]
 pub struct SunoClient;
 
 impl SunoClient {
@@ -74,7 +75,9 @@ impl SunoClient {
         let html = resp.text().await.unwrap_or_default();
 
         let mut title = default_title.clone();
-        if let Ok(title_re) = Regex::new(r#"<meta\s+property=["']og:title["']\s+content=["']([^"']+)["']"#) {
+        if let Ok(title_re) =
+            Regex::new(r#"<meta\s+property=["']og:title["']\s+content=["']([^"']+)["']"#)
+        {
             if let Some(caps) = title_re.captures(&html) {
                 let raw_title = caps[1].trim().to_string();
                 if !raw_title.is_empty() {
@@ -91,7 +94,9 @@ impl SunoClient {
         }
 
         let mut artist = default_artist;
-        if let Ok(desc_re) = Regex::new(r#"<meta\s+property=["']og:description["']\s+content=["']Listen to [^b]+by\s+([^,.\n"']+)["']"#) {
+        if let Ok(desc_re) = Regex::new(
+            r#"<meta\s+property=["']og:description["']\s+content=["']Listen to [^b]+by\s+([^,.\n"']+)["']"#,
+        ) {
             if let Some(caps) = desc_re.captures(&html) {
                 let a = caps[1].trim();
                 if !a.is_empty() {
@@ -101,7 +106,9 @@ impl SunoClient {
         }
 
         let mut cover_url = default_cover;
-        if let Ok(img_re) = Regex::new(r#"<meta\s+property=["']og:image["']\s+content=["']([^"']+)["']"#) {
+        if let Ok(img_re) =
+            Regex::new(r#"<meta\s+property=["']og:image["']\s+content=["']([^"']+)["']"#)
+        {
             if let Some(caps) = img_re.captures(&html) {
                 let img = caps[1].trim();
                 if !img.is_empty() {

@@ -1,45 +1,72 @@
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use colored::Colorize;
-use indicatif::{ProgressBar, ProgressStyle};
-use std::path::Path;
+use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
+use serde::{Deserialize, Serialize};
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use tokio::sync::Semaphore;
+use tokio::task::JoinSet;
 
 use crate::utils::file_helper::{ensure_dir, ensure_unique_path, sanitize_name};
 
-use super::config::{AudioFormat, DownloadSettings};
-use super::downloader::StreamDownloader;
+use super::config::{AudioFormat, AudioQuality, DownloadSettings};
+use super::downloader::{DownloadMode, StreamDownloader};
 use super::platform::{PlatformParser, UrlType};
 use super::spotify::{SpotifyClient, SpotifyTrackMeta};
 use super::suno::SunoClient;
 use super::tagger::{AudioMetadata, Tagger};
 use super::transcoder::Transcoder;
+use super::verify;
 use super::youtube::YouTubeClient;
 
-#[derive(Debug, Clone)]
+pub const DEFAULT_CONCURRENCY: usize = 3;
+pub const DURATION_TOLERANCE_SECS: f64 = 10.0;
+pub const FAILED_QUEUE_FILE: &str = "failed_tasks.json";
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DownloadTask {
     pub display_title: String,
     pub source_or_search: String,
     pub fallback_searches: Vec<String>,
+    pub expected_duration_secs: Option<u64>,
     pub metadata: AudioMetadata,
 }
 
-pub struct BatchProcessor<'a> {
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FailedQueue {
+    pub settings: DownloadSettings,
+    pub tasks: Vec<DownloadTask>,
+}
+
+pub struct BatchOutcome {
+    pub success_count: usize,
+    pub failed_tasks: Vec<DownloadTask>,
+}
+
+struct TaskOutcome {
+    ok: bool,
+    logs: Vec<String>,
+    task: DownloadTask,
+}
+
+pub struct BatchProcessor {
     settings: DownloadSettings,
-    ytdlp_path: &'a Path,
-    ffmpeg_path: &'a Path,
+    ytdlp_path: Arc<PathBuf>,
+    ffmpeg_path: Arc<PathBuf>,
     has_node: bool,
 }
 
-impl<'a> BatchProcessor<'a> {
+impl BatchProcessor {
     pub fn new(
         settings: DownloadSettings,
-        ytdlp_path: &'a Path,
-        ffmpeg_path: &'a Path,
+        ytdlp_path: &Path,
+        ffmpeg_path: &Path,
         has_node: bool,
     ) -> Self {
         Self {
             settings,
-            ytdlp_path,
-            ffmpeg_path,
+            ytdlp_path: Arc::new(ytdlp_path.to_path_buf()),
+            ffmpeg_path: Arc::new(ffmpeg_path.to_path_buf()),
             has_node,
         }
     }
@@ -48,7 +75,7 @@ impl<'a> BatchProcessor<'a> {
         let mut tasks = Vec::new();
         let spotify_client = SpotifyClient::new();
         let suno_client = SunoClient::new();
-        let yt_client = YouTubeClient::new(self.ytdlp_path, self.has_node);
+        let yt_client = YouTubeClient::new(self.ytdlp_path.as_path(), self.has_node);
 
         let spinner = ProgressBar::new_spinner();
         spinner.set_style(
@@ -77,7 +104,9 @@ impl<'a> BatchProcessor<'a> {
                 }
                 UrlType::SpotifyAlbum(id) => {
                     spinner.set_message(format!("{} Đang quét Album Spotify...", step_str));
-                    if let Ok((album_name, track_metas)) = spotify_client.fetch_album_tracks(&id).await {
+                    if let Ok((album_name, track_metas)) =
+                        spotify_client.fetch_album_tracks(&id).await
+                    {
                         println!(
                             "  {} Tìm thấy Album: {} ({} bài hát)",
                             "✔".green().bold(),
@@ -91,7 +120,9 @@ impl<'a> BatchProcessor<'a> {
                 }
                 UrlType::SpotifyPlaylist(id) => {
                     spinner.set_message(format!("{} Đang quét Playlist Spotify...", step_str));
-                    if let Ok((pl_name, track_metas)) = spotify_client.fetch_playlist_tracks(&id).await {
+                    if let Ok((pl_name, track_metas)) =
+                        spotify_client.fetch_playlist_tracks(&id).await
+                    {
                         println!(
                             "  {} Tìm thấy Playlist: {} ({} bài hát)",
                             "✔".green().bold(),
@@ -104,7 +135,8 @@ impl<'a> BatchProcessor<'a> {
                     }
                 }
                 UrlType::YouTubePlaylist(url) | UrlType::YouTubeMusicPlaylist(url) => {
-                    spinner.set_message(format!("{} Đang quét danh sách phát YouTube...", step_str));
+                    spinner
+                        .set_message(format!("{} Đang quét danh sách phát YouTube...", step_str));
                     if let Ok(items) = yt_client.extract_playlist_items(&url) {
                         println!(
                             "  {} Tìm thấy Playlist YouTube với {} video/bài hát",
@@ -115,9 +147,11 @@ impl<'a> BatchProcessor<'a> {
                             tasks.push(DownloadTask {
                                 display_title: format!("{} - {}", item.uploader, item.title),
                                 source_or_search: item.direct_url,
-                                fallback_searches: vec![
-                                    format!("ytsearch1:{} {}", item.uploader, item.title),
-                                ],
+                                fallback_searches: vec![format!(
+                                    "ytsearch1:{} {}",
+                                    item.uploader, item.title
+                                )],
+                                expected_duration_secs: None,
                                 metadata: AudioMetadata {
                                     title: item.title,
                                     artists: vec![item.uploader],
@@ -130,14 +164,20 @@ impl<'a> BatchProcessor<'a> {
                     }
                 }
                 UrlType::YouTubeVideo(url) | UrlType::YouTubeMusicTrack(url) => {
-                    spinner.set_message(format!("{} Đang lấy thông tin bài hát YouTube...", step_str));
+                    spinner.set_message(format!(
+                        "{} Đang lấy thông tin bài hát YouTube...",
+                        step_str
+                    ));
                     if let Ok(item) = yt_client.fetch_video_info(&url) {
+                        let expected = item.duration_secs.map(|d| d.round() as u64);
                         tasks.push(DownloadTask {
                             display_title: format!("{} - {}", item.uploader, item.title),
                             source_or_search: item.direct_url,
-                            fallback_searches: vec![
-                                format!("ytsearch1:{} {}", item.uploader, item.title),
-                            ],
+                            fallback_searches: vec![format!(
+                                "ytsearch1:{} {}",
+                                item.uploader, item.title
+                            )],
+                            expected_duration_secs: expected,
                             metadata: AudioMetadata {
                                 title: item.title,
                                 artists: vec![item.uploader],
@@ -151,6 +191,7 @@ impl<'a> BatchProcessor<'a> {
                             display_title: trimmed.to_string(),
                             source_or_search: trimmed.to_string(),
                             fallback_searches: Vec::new(),
+                            expected_duration_secs: None,
                             metadata: AudioMetadata {
                                 title: sanitize_name(trimmed),
                                 artists: vec!["YouTube".to_string()],
@@ -162,14 +203,20 @@ impl<'a> BatchProcessor<'a> {
                     }
                 }
                 UrlType::SunoTrack(uuid) => {
-                    spinner.set_message(format!("{} Đang lấy thông tin bài hát Suno AI...", step_str));
+                    spinner.set_message(format!(
+                        "{} Đang lấy thông tin bài hát Suno AI...",
+                        step_str
+                    ));
                     let meta = suno_client.fetch_track(&uuid).await.unwrap_or_else(|_| {
                         crate::core::suno::SunoTrackMeta {
                             uuid: uuid.clone(),
                             title: format!("Suno AI - {}", &uuid[0..8.min(uuid.len())]),
                             artist: "Suno AI".to_string(),
                             audio_url: format!("https://cdn1.suno.ai/{}.mp3", uuid),
-                            fallback_audio_url: format!("https://audiopipe.suno.ai/?item_id={}", uuid),
+                            fallback_audio_url: format!(
+                                "https://audiopipe.suno.ai/?item_id={}",
+                                uuid
+                            ),
                             cover_url: None,
                         }
                     });
@@ -184,6 +231,7 @@ impl<'a> BatchProcessor<'a> {
                         display_title: format!("{} - {}", meta.artist, meta.title),
                         source_or_search: meta.audio_url,
                         fallback_searches: vec![meta.fallback_audio_url],
+                        expected_duration_secs: None,
                         metadata: AudioMetadata {
                             title: meta.title,
                             artists: vec![meta.artist],
@@ -194,12 +242,16 @@ impl<'a> BatchProcessor<'a> {
                     });
                 }
                 UrlType::SocialVideo { url, platform_name } => {
-                    spinner.set_message(format!("{} Đang lấy thông tin {}...", step_str, platform_name));
+                    spinner.set_message(format!(
+                        "{} Đang lấy thông tin {}...",
+                        step_str, platform_name
+                    ));
                     if let Ok(item) = yt_client.fetch_media_info(&url, &platform_name) {
                         tasks.push(DownloadTask {
                             display_title: format!("{} - {}", item.uploader, item.title),
                             source_or_search: item.direct_url,
                             fallback_searches: Vec::new(),
+                            expected_duration_secs: None,
                             metadata: AudioMetadata {
                                 title: item.title,
                                 artists: vec![item.uploader],
@@ -210,9 +262,14 @@ impl<'a> BatchProcessor<'a> {
                         });
                     } else {
                         tasks.push(DownloadTask {
-                            display_title: format!("{} - {}", platform_name, sanitize_name(trimmed)),
+                            display_title: format!(
+                                "{} - {}",
+                                platform_name,
+                                sanitize_name(trimmed)
+                            ),
                             source_or_search: trimmed.to_string(),
                             fallback_searches: Vec::new(),
+                            expected_duration_secs: None,
                             metadata: AudioMetadata {
                                 title: format!("{} Audio", platform_name),
                                 artists: vec![platform_name.clone()],
@@ -232,6 +289,7 @@ impl<'a> BatchProcessor<'a> {
                             format!("ytsearch3:{}", query),
                             format!("ytsearch1:{} official audio", query),
                         ],
+                        expected_duration_secs: None,
                         metadata: AudioMetadata {
                             title: query.clone(),
                             artists: vec!["Search".to_string()],
@@ -261,10 +319,13 @@ impl<'a> BatchProcessor<'a> {
             format!("ytsearch3:{} {}", primary_artist, meta.title),
         ];
 
+        let expected_duration_secs = meta.duration_ms.map(|ms| ms / 1000);
+
         DownloadTask {
             display_title,
             source_or_search: search_target,
             fallback_searches,
+            expected_duration_secs,
             metadata: AudioMetadata {
                 title: meta.title,
                 artists: meta.artists,
@@ -275,132 +336,314 @@ impl<'a> BatchProcessor<'a> {
         }
     }
 
-    pub async fn execute_batch(&self, tasks: &[DownloadTask]) -> Result<()> {
+    pub fn retry_from_file(output_dir: &Path) -> Result<(DownloadSettings, Vec<DownloadTask>)> {
+        let path = output_dir.join(FAILED_QUEUE_FILE);
+        if !path.exists() {
+            return Err(anyhow!(
+                "Không tìm thấy hàng đợi bài lỗi tại: {}",
+                path.display()
+            ));
+        }
+        let content = std::fs::read_to_string(&path)?;
+        let queue: FailedQueue = serde_json::from_str(&content)?;
+        Ok((queue.settings, queue.tasks))
+    }
+
+    pub async fn execute_batch(&self, tasks: &[DownloadTask]) -> Result<BatchOutcome> {
         if tasks.is_empty() {
             println!("{}", "Không có bài hát nào trong hàng đợi tải!".yellow());
-            return Ok(());
+            return Ok(BatchOutcome {
+                success_count: 0,
+                failed_tasks: Vec::new(),
+            });
         }
 
         let clean_output_dir = ensure_dir(&self.settings.output_dir)?;
         let temp_dir = clean_output_dir.join(".ghita_temp");
         ensure_dir(&temp_dir)?;
 
-        let downloader = StreamDownloader::new(self.ytdlp_path, self.has_node);
-        let transcoder = Transcoder::new(self.ffmpeg_path);
-        let tagger = Tagger::new();
-
         println!(
-            "\n{} Chuẩn bị tải {} bài hát vào thư mục: {}\n",
+            "\n{} Chuẩn bị tải {} bài hát (song song tối đa {}) vào thư mục: {}\n",
             "🚀".cyan(),
             tasks.len().to_string().green().bold(),
+            self.settings.concurrency.to_string().yellow().bold(),
             clean_output_dir.display().to_string().yellow()
         );
 
-        let mut success_count = 0;
-        let mut failed_count = 0;
+        let concurrency = if self.settings.concurrency == 0 {
+            DEFAULT_CONCURRENCY
+        } else {
+            self.settings.concurrency
+        };
+
+        let settings = Arc::new(self.settings.clone());
+        let semaphore = Arc::new(Semaphore::new(concurrency));
+        let multi = Arc::new(MultiProgress::new());
+        let tagger = Arc::new(Tagger::new());
+        let ytdlp = self.ytdlp_path.clone();
+        let ffmpeg = self.ffmpeg_path.clone();
+        let has_node = self.has_node;
+        let total = tasks.len();
+
+        let mut set = JoinSet::new();
 
         for (index, task) in tasks.iter().enumerate() {
-            let step_num = index + 1;
-            println!(
-                "[{}/{}] {} {}",
-                step_num,
-                tasks.len(),
-                "Đang xử lý:".bold(),
-                task.display_title.cyan()
-            );
+            let task = task.clone();
+            let settings = settings.clone();
+            let semaphore = semaphore.clone();
+            let multi = multi.clone();
+            let tagger = tagger.clone();
+            let ytdlp = ytdlp.clone();
+            let ffmpeg = ffmpeg.clone();
+            let temp_dir = temp_dir.clone();
+            let out_dir = clean_output_dir.clone();
 
-            let mut targets_to_try = vec![task.source_or_search.clone()];
-            targets_to_try.extend(task.fallback_searches.clone());
-
-            let mut downloaded_path = None;
-
-            for (attempt_idx, target) in targets_to_try.iter().enumerate() {
-                if attempt_idx > 0 {
-                    print!("    {} Thử tìm kiếm dự phòng ({}/{})... ", "🔄".yellow(), attempt_idx, targets_to_try.len() - 1);
-                } else {
-                    print!("    {} Tải luồng âm thanh gốc... ", "⬇".blue());
-                }
-
-                match downloader.download_stream(target, &temp_dir) {
-                    Ok(path) => {
-                        println!("{}", "Xong".green());
-                        downloaded_path = Some(path);
-                        break;
+            set.spawn(async move {
+                let _permit = match semaphore.acquire_owned().await {
+                    Ok(p) => p,
+                    Err(_) => {
+                        return TaskOutcome {
+                            ok: false,
+                            logs: vec![format!("    {} Mất khóa điều phối tác vụ", "✖".red())],
+                            task,
+                        };
                     }
-                    Err(err) => {
-                        if attempt_idx + 1 < targets_to_try.len() {
-                            println!("{}", "Thử phương án khác...".yellow());
-                        } else {
-                            println!("{} ({})", "Thất bại".red(), err);
+                };
+
+                let handle = multi.add(ProgressBar::new(0));
+                handle.set_style(
+                    ProgressStyle::default_bar()
+                        .template("{wide_bar:.cyan/blue} {bytes:>12}/{total_bytes:>12} {msg}")
+                        .unwrap()
+                        .progress_chars("=>-"),
+                );
+                handle.set_message(format!("[{}/{}] chờ tới lượt", index + 1, total));
+
+                let mut logs: Vec<String> = Vec::new();
+                let mut targets = vec![task.source_or_search.clone()];
+                targets.extend(task.fallback_searches.iter().cloned());
+
+                let mode = match settings.format {
+                    AudioFormat::Video => DownloadMode::Video(settings.video_resolution),
+                    _ => DownloadMode::Audio,
+                };
+
+                let mut downloaded: Option<PathBuf> = None;
+
+                for (attempt_idx, target) in targets.iter().enumerate() {
+                    let label = if attempt_idx == 0 {
+                        "tải luồng gốc".to_string()
+                    } else {
+                        format!("dự phòng {}/{}", attempt_idx + 1, targets.len())
+                    };
+                    handle.set_message(format!(
+                        "[{}/{}] {} • {}",
+                        index + 1,
+                        total,
+                        label,
+                        task.display_title
+                    ));
+
+                    let ytdlp_p = ytdlp.clone();
+                    let temp = temp_dir.clone();
+                    let tgt = target.clone();
+                    let bar = handle.clone();
+                    let dl_res = tokio::task::spawn_blocking(move || {
+                        let dl = StreamDownloader::new(ytdlp_p.as_path(), has_node);
+                        dl.download_stream(&tgt, &temp, mode, Some(&bar))
+                    })
+                    .await;
+
+                    let path = match dl_res {
+                        Ok(Ok(p)) => p,
+                        Ok(Err(e)) => {
+                            logs.push(format!("    {} {}", "⚠".yellow(), e));
+                            continue;
+                        }
+                        Err(e) => {
+                            logs.push(format!("    {} Lỗi luồng tải: {}", "⚠".yellow(), e));
+                            continue;
+                        }
+                    };
+
+                    let ff = ffmpeg.clone();
+                    let probe_path = path.clone();
+                    let expected = task.expected_duration_secs;
+                    let check = tokio::task::spawn_blocking(move || {
+                        verify::probe_media(&probe_path, ff.as_path()).and_then(|info| {
+                            verify::validate_downloaded(&info, expected, DURATION_TOLERANCE_SECS)
+                        })
+                    })
+                    .await;
+
+                    match check {
+                        Ok(Ok(())) => {
+                            downloaded = Some(path);
+                            break;
+                        }
+                        Ok(Err(e)) => {
+                            let _ = std::fs::remove_file(&path);
+                            logs.push(format!(
+                                "    {} Tệp không đạt kiểm chứng: {}",
+                                "⚠".yellow(),
+                                e
+                            ));
+                        }
+                        Err(e) => {
+                            let _ = std::fs::remove_file(&path);
+                            logs.push(format!("    {} Lỗi kiểm chứng tệp: {}", "⚠".yellow(), e));
                         }
                     }
                 }
-            }
 
-            let temp_audio_file = match downloaded_path {
-                Some(p) => p,
-                None => {
-                    failed_count += 1;
-                    continue;
+                let temp_file = match downloaded {
+                    Some(f) => f,
+                    None => {
+                        handle.finish_and_clear();
+                        logs.push(format!(
+                            "    {} {} thất bại sau {} phương án tải",
+                            "✖".red(),
+                            task.display_title,
+                            targets.len()
+                        ));
+                        return TaskOutcome {
+                            ok: false,
+                            logs,
+                            task,
+                        };
+                    }
+                };
+
+                let fmt = settings.format;
+                let ext = match fmt {
+                    AudioFormat::Mp3 => "mp3".to_string(),
+                    AudioFormat::Wav => "wav".to_string(),
+                    AudioFormat::Video => "mp4".to_string(),
+                    AudioFormat::Original => temp_file
+                        .extension()
+                        .and_then(|e| e.to_str())
+                        .map(|s| s.to_ascii_lowercase())
+                        .unwrap_or_else(|| "m4a".to_string()),
+                };
+                let final_path = ensure_unique_path(&out_dir, &task.display_title, &ext);
+
+                handle.set_message(format!(
+                    "[{}/{}] hoàn thiện • {}",
+                    index + 1,
+                    total,
+                    task.display_title
+                ));
+
+                let tr = Transcoder::new(ffmpeg.as_path());
+                let src = temp_file.clone();
+                let dst = final_path.clone();
+                let meta = task.metadata.clone();
+                let q = settings.quality;
+                let tr_res = tokio::task::spawn_blocking(move || match fmt {
+                    AudioFormat::Mp3 | AudioFormat::Wav => {
+                        tr.transcode(&src, &dst, fmt, q.unwrap_or(AudioQuality::Mp3_320k), &meta)
+                    }
+                    _ => tr.remux_copy(&src, &dst, &meta),
+                })
+                .await;
+
+                let _ = std::fs::remove_file(&temp_file);
+
+                let mut ok = true;
+                match tr_res {
+                    Ok(Ok(())) => {}
+                    Ok(Err(e)) => {
+                        logs.push(format!("    {} Xử lý tệp thất bại: {}", "✖".red(), e));
+                        ok = false;
+                    }
+                    Err(e) => {
+                        logs.push(format!("    {} Lỗi luồng chuyển mã: {}", "✖".red(), e));
+                        ok = false;
+                    }
                 }
-            };
 
-            let ext = self.settings.quality.file_extension(self.settings.format);
-            let final_file_path = ensure_unique_path(
-                &clean_output_dir,
-                &task.display_title,
-                ext,
-            );
+                if ok && fmt == AudioFormat::Mp3 {
+                    match tagger.tag_mp3(&final_path, &task.metadata).await {
+                        Ok(_) => logs.push(format!(
+                            "    {} {}",
+                            "🏷".magenta(),
+                            "Nhúng ID3 & ảnh bìa: Xong".green()
+                        )),
+                        Err(_) => logs.push(format!("    {}", "Bỏ qua ảnh bìa".yellow())),
+                    }
+                }
 
-            print!(
-                "    {} Chuyển mã sang .{} ({:?})... ",
-                "⚡".yellow(),
-                ext.to_uppercase(),
-                self.settings.quality
-            );
-
-            let transcode_res = transcoder.transcode(
-                &temp_audio_file,
-                &final_file_path,
-                self.settings.format,
-                self.settings.quality,
-                &task.metadata,
-            );
-
-            let _ = std::fs::remove_file(&temp_audio_file);
-
-            if let Err(err) = transcode_res {
-                println!("{} ({})", "Thất bại".red(), err);
-                failed_count += 1;
-                continue;
-            }
-            println!("{}", "Xong".green());
-
-            if self.settings.format == AudioFormat::Mp3 {
-                print!("    {} Nhúng thẻ thông tin ID3 & ảnh bìa... ", "🏷".magenta());
-                if tagger.tag_mp3(&final_file_path, &task.metadata).await.is_ok() {
-                    println!("{}", "Xong".green());
+                if ok {
+                    logs.push(format!(
+                        "    {} Lưu tệp thành công: {}",
+                        "✔".green().bold(),
+                        final_path
+                            .file_name()
+                            .unwrap_or_default()
+                            .to_string_lossy()
+                            .bright_white()
+                    ));
                 } else {
-                    println!("{}", "Bỏ qua ảnh bìa".yellow());
+                    let _ = std::fs::remove_file(&final_path);
+                }
+
+                handle.finish_and_clear();
+                TaskOutcome { ok, logs, task }
+            });
+        }
+
+        let mut success_count = 0usize;
+        let mut failed_tasks: Vec<DownloadTask> = Vec::new();
+
+        while let Some(joined) = set.join_next().await {
+            match joined {
+                Ok(outcome) => {
+                    for line in &outcome.logs {
+                        let _ = multi.println(line);
+                    }
+                    if outcome.ok {
+                        success_count += 1;
+                    } else {
+                        failed_tasks.push(outcome.task);
+                    }
+                }
+                Err(e) => {
+                    let _ = multi.println(format!("{}", format!("    Lỗi tác vụ: {}", e).red()));
                 }
             }
-
-            println!(
-                "    {} Lưu tệp thành công: {}\n",
-                "✔".green().bold(),
-                final_file_path.file_name().unwrap_or_default().to_string_lossy().bright_white()
-            );
-            success_count += 1;
         }
 
         let _ = std::fs::remove_dir_all(&temp_dir);
+
+        if !failed_tasks.is_empty() {
+            let queue = FailedQueue {
+                settings: (*settings).clone(),
+                tasks: failed_tasks.clone(),
+            };
+            if let Ok(json) = serde_json::to_string_pretty(&queue) {
+                let queue_path = clean_output_dir.join(FAILED_QUEUE_FILE);
+                if std::fs::write(&queue_path, json).is_ok() {
+                    println!(
+                        "{}",
+                        format!(
+                            "  Đã lưu hàng đợi {} bài lỗi vào: {}",
+                            failed_tasks.len(),
+                            queue_path.display()
+                        )
+                        .yellow()
+                    );
+                }
+            }
+        } else {
+            let _ = std::fs::remove_file(clean_output_dir.join(FAILED_QUEUE_FILE));
+        }
 
         println!("══════════════════════════════════════════════");
         println!(
             "{} Hoàn thành tải hàng loạt! Thành công: {} | Lỗi: {}",
             "🎉".green(),
             success_count.to_string().green().bold(),
-            failed_count.to_string().red()
+            failed_tasks.len().to_string().red()
         );
         println!(
             "Thư mục lưu bài hát: {}",
@@ -408,6 +651,9 @@ impl<'a> BatchProcessor<'a> {
         );
         println!("══════════════════════════════════════════════\n");
 
-        Ok(())
+        Ok(BatchOutcome {
+            success_count,
+            failed_tasks,
+        })
     }
 }

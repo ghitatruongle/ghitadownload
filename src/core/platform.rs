@@ -21,20 +21,35 @@ impl PlatformParser {
         let trimmed = input.trim();
 
         if trimmed.contains("open.spotify.com") || trimmed.starts_with("spotify:") {
-            if let Some(caps) = Regex::new(r"track[/:]([a-zA-Z0-9]+)").unwrap().captures(trimmed) {
+            if let Some(caps) = Regex::new(r"track[/:]([a-zA-Z0-9]+)")
+                .unwrap()
+                .captures(trimmed)
+            {
                 return UrlType::SpotifyTrack(caps[1].to_string());
             }
-            if let Some(caps) = Regex::new(r"album[/:]([a-zA-Z0-9]+)").unwrap().captures(trimmed) {
+            if let Some(caps) = Regex::new(r"album[/:]([a-zA-Z0-9]+)")
+                .unwrap()
+                .captures(trimmed)
+            {
                 return UrlType::SpotifyAlbum(caps[1].to_string());
             }
-            if let Some(caps) = Regex::new(r"playlist[/:]([a-zA-Z0-9]+)").unwrap().captures(trimmed) {
+            if let Some(caps) = Regex::new(r"playlist[/:]([a-zA-Z0-9]+)")
+                .unwrap()
+                .captures(trimmed)
+            {
                 return UrlType::SpotifyPlaylist(caps[1].to_string());
             }
         }
 
         if trimmed.contains("music.youtube.com") {
-            if let Some(caps) = Regex::new(r"[?&]v=([a-zA-Z0-9_-]{11})").unwrap().captures(trimmed) {
-                return UrlType::YouTubeMusicTrack(format!("https://music.youtube.com/watch?v={}", &caps[1]));
+            if let Some(caps) = Regex::new(r"[?&]v=([a-zA-Z0-9_-]{11})")
+                .unwrap()
+                .captures(trimmed)
+            {
+                return UrlType::YouTubeMusicTrack(format!(
+                    "https://music.youtube.com/watch?v={}",
+                    &caps[1]
+                ));
             }
             if trimmed.contains("list=") {
                 return UrlType::YouTubeMusicPlaylist(trimmed.to_string());
@@ -43,10 +58,14 @@ impl PlatformParser {
         }
 
         if trimmed.contains("youtube.com") || trimmed.contains("youtu.be") {
-            let vid_regex = Regex::new(r"(?:[?&]v=|youtu\.be/|shorts/)([a-zA-Z0-9_-]{11})").unwrap();
+            let vid_regex =
+                Regex::new(r"(?:[?&]v=|youtu\.be/|shorts/)([a-zA-Z0-9_-]{11})").unwrap();
             if let Some(caps) = vid_regex.captures(trimmed) {
                 let vid_id = &caps[1];
-                return UrlType::YouTubeVideo(format!("https://www.youtube.com/watch?v={}", vid_id));
+                return UrlType::YouTubeVideo(format!(
+                    "https://www.youtube.com/watch?v={}",
+                    vid_id
+                ));
             }
 
             if trimmed.contains("list=") {
@@ -56,7 +75,10 @@ impl PlatformParser {
         }
 
         if trimmed.contains("suno.com") || trimmed.contains("suno.ai") {
-            let suno_uuid_re = Regex::new(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}").unwrap();
+            let suno_uuid_re = Regex::new(
+                r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}",
+            )
+            .unwrap();
             if let Some(caps) = suno_uuid_re.captures(trimmed) {
                 return UrlType::SunoTrack(caps[0].to_string());
             }
@@ -69,7 +91,10 @@ impl PlatformParser {
             };
         }
 
-        if trimmed.contains("facebook.com") || trimmed.contains("fb.watch") || trimmed.contains("fb.com") {
+        if trimmed.contains("facebook.com")
+            || trimmed.contains("fb.watch")
+            || trimmed.contains("fb.com")
+        {
             return UrlType::SocialVideo {
                 url: trimmed.to_string(),
                 platform_name: "Facebook".to_string(),
@@ -87,6 +112,20 @@ impl PlatformParser {
             return UrlType::SocialVideo {
                 url: trimmed.to_string(),
                 platform_name: "Threads".to_string(),
+            };
+        }
+
+        if trimmed.contains("soundcloud.com") || trimmed.contains("sndcdn.com") {
+            return UrlType::SocialVideo {
+                url: trimmed.to_string(),
+                platform_name: "SoundCloud".to_string(),
+            };
+        }
+
+        if trimmed.contains("bandcamp.com") {
+            return UrlType::SocialVideo {
+                url: trimmed.to_string(),
+                platform_name: "Bandcamp".to_string(),
             };
         }
 

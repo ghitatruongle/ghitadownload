@@ -28,6 +28,8 @@ impl Default for SpotifyClient {
 impl SpotifyClient {
     pub fn new() -> Self {
         let client = Client::builder()
+            .timeout(std::time::Duration::from_secs(20))
+            .connect_timeout(std::time::Duration::from_secs(10))
             .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
             .build()
             .unwrap_or_default();
@@ -38,7 +40,8 @@ impl SpotifyClient {
         let embed_url = format!("https://open.spotify.com/embed/track/{}", track_id);
         let resp = self.client.get(&embed_url).send().await?.text().await?;
 
-        let re = Regex::new(r#"<script id="__NEXT_DATA__" type="application/json">([^<]+)</script>"#)?;
+        let re =
+            Regex::new(r#"<script id="__NEXT_DATA__" type="application/json">([^<]+)</script>"#)?;
         if let Some(caps) = re.captures(&resp) {
             let json_str = &caps[1];
             let v: Value = serde_json::from_str(json_str)?;
@@ -103,7 +106,8 @@ impl SpotifyClient {
         if let Ok(og_title_re) = Regex::new(r#"<meta property="og:title" content="([^"]+)""#) {
             if let Some(caps) = og_title_re.captures(&resp) {
                 let full_title = caps[1].to_string();
-                let og_desc_re = Regex::new(r#"<meta property="og:description" content="([^"]+)""#).ok();
+                let og_desc_re =
+                    Regex::new(r#"<meta property="og:description" content="([^"]+)""#).ok();
                 let og_img_re = Regex::new(r#"<meta property="og:image" content="([^"]+)""#).ok();
 
                 let mut artist = "Spotify Artist".to_string();
@@ -137,19 +141,29 @@ impl SpotifyClient {
             }
         }
 
-        self.fetch_via_oembed(&format!("https://open.spotify.com/track/{}", track_id)).await
+        self.fetch_via_oembed(&format!("https://open.spotify.com/track/{}", track_id))
+            .await
     }
 
-    pub async fn fetch_album_tracks(&self, album_id: &str) -> Result<(String, Vec<SpotifyTrackMeta>)> {
+    pub async fn fetch_album_tracks(
+        &self,
+        album_id: &str,
+    ) -> Result<(String, Vec<SpotifyTrackMeta>)> {
         let embed_url = format!("https://open.spotify.com/embed/album/{}", album_id);
         let resp = self.client.get(&embed_url).send().await?.text().await?;
 
-        let re = Regex::new(r#"<script id="__NEXT_DATA__" type="application/json">([^<]+)</script>"#)?;
-        let caps = re.captures(&resp).ok_or_else(|| anyhow!("Không thể phân tích dữ liệu Album Spotify"))?;
+        let re =
+            Regex::new(r#"<script id="__NEXT_DATA__" type="application/json">([^<]+)</script>"#)?;
+        let caps = re
+            .captures(&resp)
+            .ok_or_else(|| anyhow!("Không thể phân tích dữ liệu Album Spotify"))?;
         let v: Value = serde_json::from_str(&caps[1])?;
 
         let entity = &v["props"]["pageProps"]["state"]["data"]["entity"];
-        let album_name = entity["name"].as_str().unwrap_or("Spotify Album").to_string();
+        let album_name = entity["name"]
+            .as_str()
+            .unwrap_or("Spotify Album")
+            .to_string();
 
         let mut cover_url = None;
         if let Some(images) = entity["visualIdentity"]["image"].as_array() {
@@ -161,8 +175,14 @@ impl SpotifyClient {
         let mut tracks = Vec::new();
         if let Some(track_list) = entity["trackList"].as_array() {
             for item in track_list {
-                let title = item["title"].as_str().unwrap_or("Unknown Title").to_string();
-                let subtitle = item["subtitle"].as_str().unwrap_or("Unknown Artist").to_string();
+                let title = item["title"]
+                    .as_str()
+                    .unwrap_or("Unknown Title")
+                    .to_string();
+                let subtitle = item["subtitle"]
+                    .as_str()
+                    .unwrap_or("Unknown Artist")
+                    .to_string();
                 let duration_ms = item["duration"].as_u64();
                 let search_query = format!("{} {} official audio", subtitle, title);
 
@@ -181,16 +201,25 @@ impl SpotifyClient {
         Ok((album_name, tracks))
     }
 
-    pub async fn fetch_playlist_tracks(&self, playlist_id: &str) -> Result<(String, Vec<SpotifyTrackMeta>)> {
+    pub async fn fetch_playlist_tracks(
+        &self,
+        playlist_id: &str,
+    ) -> Result<(String, Vec<SpotifyTrackMeta>)> {
         let embed_url = format!("https://open.spotify.com/embed/playlist/{}", playlist_id);
         let resp = self.client.get(&embed_url).send().await?.text().await?;
 
-        let re = Regex::new(r#"<script id="__NEXT_DATA__" type="application/json">([^<]+)</script>"#)?;
-        let caps = re.captures(&resp).ok_or_else(|| anyhow!("Không thể phân tích dữ liệu Playlist Spotify"))?;
+        let re =
+            Regex::new(r#"<script id="__NEXT_DATA__" type="application/json">([^<]+)</script>"#)?;
+        let caps = re
+            .captures(&resp)
+            .ok_or_else(|| anyhow!("Không thể phân tích dữ liệu Playlist Spotify"))?;
         let v: Value = serde_json::from_str(&caps[1])?;
 
         let entity = &v["props"]["pageProps"]["state"]["data"]["entity"];
-        let playlist_name = entity["name"].as_str().unwrap_or("Spotify Playlist").to_string();
+        let playlist_name = entity["name"]
+            .as_str()
+            .unwrap_or("Spotify Playlist")
+            .to_string();
 
         let mut cover_url = None;
         if let Some(images) = entity["visualIdentity"]["image"].as_array() {

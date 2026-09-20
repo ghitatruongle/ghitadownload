@@ -1,7 +1,7 @@
 [package]
 name = "ghita_download"
-version = "0.0.0"
-edition = "2021"
+version = "0.0.1"
+edition = "2021" 
 
 [[bin]]
 name = "ghitadownload"
@@ -27,3 +27,4 @@ dirs = "5.0"
 url = "2.5"
 sanitize-filename = "0.5"
 crossterm = "0.25"
+clap = { version = "4", features = ["derive"] }

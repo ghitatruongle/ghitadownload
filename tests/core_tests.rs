@@ -1,4 +1,4 @@
-use ghita_download::core::config::{AudioFormat, AudioQuality};
+use ghita_download::core::config::{AppConfig, AudioFormat, AudioQuality, DownloadSettings};
 use ghita_download::core::platform::{PlatformParser, UrlType};
 use ghita_download::core::spotify::SpotifyClient;
 use ghita_download::utils::file_helper::sanitize_name;
@@ -60,15 +60,30 @@ fn test_filename_sanitization() {
 fn test_vietnamese_accent_removal() {
     let vn_name = "Cháu Lên Ba - Bích Phương (Đêm Sắc Hương Bình) [Official]";
     let clean = sanitize_name(vn_name);
-    assert_eq!(clean, "Chau Len Ba - Bich Phuong (Dem Sac Huong Binh) [Official]");
+    assert_eq!(
+        clean,
+        "Chau Len Ba - Bich Phuong (Dem Sac Huong Binh) [Official]"
+    );
 }
 
 #[test]
 fn test_audio_qualities_extensions() {
-    assert_eq!(AudioQuality::Mp3_320k.file_extension(AudioFormat::Mp3), "mp3");
-    assert_eq!(AudioQuality::Mp3_64k.file_extension(AudioFormat::Mp3), "mp3");
-    assert_eq!(AudioQuality::Wav_24bit_48k.file_extension(AudioFormat::Wav), "wav");
-    assert_eq!(AudioQuality::Wav_8bit_11k.file_extension(AudioFormat::Wav), "wav");
+    assert_eq!(
+        AudioQuality::Mp3_320k.file_extension(AudioFormat::Mp3),
+        "mp3"
+    );
+    assert_eq!(
+        AudioQuality::Mp3_64k.file_extension(AudioFormat::Mp3),
+        "mp3"
+    );
+    assert_eq!(
+        AudioQuality::Wav_24bit_48k.file_extension(AudioFormat::Wav),
+        "wav"
+    );
+    assert_eq!(
+        AudioQuality::Wav_8bit_11k.file_extension(AudioFormat::Wav),
+        "wav"
+    );
 
     assert_eq!(AudioQuality::all_mp3().len(), 6);
     assert_eq!(AudioQuality::all_wav().len(), 4);
@@ -78,7 +93,11 @@ fn test_audio_qualities_extensions() {
 async fn test_spotify_metadata_fetch() {
     let client = SpotifyClient::new();
     let meta = client.fetch_track("4cOdK2wGLETKBW3PvgPWqT").await;
-    assert!(meta.is_ok(), "Failed to fetch Spotify metadata: {:?}", meta.err());
+    assert!(
+        meta.is_ok(),
+        "Failed to fetch Spotify metadata: {:?}",
+        meta.err()
+    );
 
     let track = meta.unwrap();
     assert!(track.title.contains("Never Gonna Give You Up"));
@@ -134,7 +153,10 @@ fn test_clean_path_strips_quotes() {
 
     let raw = Path::new("\"C:\\Users\\Acer\\Downloads\\mautrain\\New folder\"");
     let cleaned = clean_path(raw);
-    assert_eq!(cleaned, PathBuf::from("C:\\Users\\Acer\\Downloads\\mautrain\\New folder"));
+    assert_eq!(
+        cleaned,
+        PathBuf::from("C:\\Users\\Acer\\Downloads\\mautrain\\New folder")
+    );
 
     let single_quoted = Path::new("'D:\\Music\\My Songs'");
     let cleaned_single = clean_path(single_quoted);
@@ -201,4 +223,259 @@ fn test_extended_accent_removal() {
     assert!(!clean.contains('–'));
     assert!(!clean.contains('"'));
     assert!(clean.starts_with("Son Tung M-TP - Dung Ve Tre"));
+}
+
+#[test]
+fn test_soundcloud_bandcamp_parser() {
+    let sc_url = "https://soundcloud.com/artist/set/track-name";
+    assert_eq!(
+        PlatformParser::parse(sc_url),
+        UrlType::SocialVideo {
+            url: sc_url.to_string(),
+            platform_name: "SoundCloud".to_string(),
+        }
+    );
+
+    let sc_m_url = "https://m.soundcloud.com/user/tracks";
+    assert_eq!(
+        PlatformParser::parse(sc_m_url),
+        UrlType::SocialVideo {
+            url: sc_m_url.to_string(),
+            platform_name: "SoundCloud".to_string(),
+        }
+    );
+
+    let cdn_url = "https://cf-scfwmedia.sndcdn.com/a-1234.mp3";
+    assert_eq!(
+        PlatformParser::parse(cdn_url),
+        UrlType::SocialVideo {
+            url: cdn_url.to_string(),
+            platform_name: "SoundCloud".to_string(),
+        }
+    );
+
+    let bc_url = "https://artist.bandcamp.com/track/song-name";
+    assert_eq!(
+        PlatformParser::parse(bc_url),
+        UrlType::SocialVideo {
+            url: bc_url.to_string(),
+            platform_name: "Bandcamp".to_string(),
+        }
+    );
+
+    let bc_daily_url = "https://daily.bandcamp.com/features/article";
+    assert_eq!(
+        PlatformParser::parse(bc_daily_url),
+        UrlType::SocialVideo {
+            url: bc_daily_url.to_string(),
+            platform_name: "Bandcamp".to_string(),
+        }
+    );
+}
+
+#[test]
+fn test_audio_format_from_str() {
+    assert_eq!("mp3".parse::<AudioFormat>().unwrap(), AudioFormat::Mp3);
+    assert_eq!("MP3".parse::<AudioFormat>().unwrap(), AudioFormat::Mp3);
+    assert_eq!(" wav ".parse::<AudioFormat>().unwrap(), AudioFormat::Wav);
+    assert_eq!(
+        "original".parse::<AudioFormat>().unwrap(),
+        AudioFormat::Original
+    );
+    assert_eq!("m4a".parse::<AudioFormat>().unwrap(), AudioFormat::Original);
+    assert_eq!(
+        "Opus".parse::<AudioFormat>().unwrap(),
+        AudioFormat::Original
+    );
+    assert_eq!("video".parse::<AudioFormat>().unwrap(), AudioFormat::Video);
+    assert_eq!("mp4".parse::<AudioFormat>().unwrap(), AudioFormat::Video);
+    assert!("flac".parse::<AudioFormat>().is_err());
+    assert!("".parse::<AudioFormat>().is_err());
+}
+
+#[test]
+fn test_audio_quality_from_str() {
+    assert_eq!(
+        "320k".parse::<AudioQuality>().unwrap(),
+        AudioQuality::Mp3_320k
+    );
+    assert_eq!(
+        "256k".parse::<AudioQuality>().unwrap(),
+        AudioQuality::Mp3_256k
+    );
+    assert_eq!(
+        "192k".parse::<AudioQuality>().unwrap(),
+        AudioQuality::Mp3_192k
+    );
+    assert_eq!(
+        "128k".parse::<AudioQuality>().unwrap(),
+        AudioQuality::Mp3_128k
+    );
+    assert_eq!(
+        "96k".parse::<AudioQuality>().unwrap(),
+        AudioQuality::Mp3_96k
+    );
+    assert_eq!(
+        "64k".parse::<AudioQuality>().unwrap(),
+        AudioQuality::Mp3_64k
+    );
+    assert_eq!(
+        "24bit48k".parse::<AudioQuality>().unwrap(),
+        AudioQuality::Wav_24bit_48k
+    );
+    assert_eq!(
+        "16bit44k".parse::<AudioQuality>().unwrap(),
+        AudioQuality::Wav_16bit_44k
+    );
+    assert_eq!(
+        "16bit22k".parse::<AudioQuality>().unwrap(),
+        AudioQuality::Wav_16bit_22k
+    );
+    assert_eq!(
+        "8bit11k".parse::<AudioQuality>().unwrap(),
+        AudioQuality::Wav_8bit_11k
+    );
+    assert!("320kbps".parse::<AudioQuality>().is_err());
+    assert!("999k".parse::<AudioQuality>().is_err());
+}
+
+#[test]
+fn test_failed_queue_serde_roundtrip_and_retry() {
+    use ghita_download::core::batch::{BatchProcessor, DownloadTask, FailedQueue};
+    use ghita_download::core::tagger::AudioMetadata;
+    use ghita_download::utils::env::find_ffmpeg;
+    use std::path::PathBuf;
+
+    let ffmpeg = match find_ffmpeg() {
+        Some(f) => f,
+        None => {
+            eprintln!("Bỏ qua test: FFmpeg khả dụng qua PATH/ytdlp là bắt buộc");
+            return;
+        }
+    };
+    let _ = ffmpeg;
+
+    let settings = DownloadSettings {
+        output_dir: PathBuf::from("D:\\Music\\Test"),
+        format: AudioFormat::Mp3,
+        quality: Some(AudioQuality::Mp3_320k),
+        video_resolution: None,
+        concurrency: 3,
+    };
+
+    let task = DownloadTask {
+        display_title: "Artist - Track Title".to_string(),
+        source_or_search: "https://www.youtube.com/watch?v=abcdef12345".to_string(),
+        fallback_searches: vec!["Artist Track Title".to_string()],
+        expected_duration_secs: Some(205),
+        metadata: AudioMetadata {
+            title: "Track Title".to_string(),
+            artists: vec!["Artist".to_string()],
+            album: "Test Album".to_string(),
+            release_year: Some(2026),
+            cover_url: None,
+        },
+    };
+
+    let queue = FailedQueue {
+        settings: settings.clone(),
+        tasks: vec![task.clone()],
+    };
+
+    let json = serde_json::to_string_pretty(&queue).unwrap();
+    let parsed: FailedQueue = serde_json::from_str(&json).unwrap();
+    assert_eq!(parsed.tasks.len(), 1);
+    assert_eq!(parsed.tasks[0].display_title, task.display_title);
+    assert_eq!(parsed.tasks[0].expected_duration_secs, Some(205));
+    assert_eq!(parsed.settings.format, AudioFormat::Mp3);
+    assert_eq!(parsed.settings.quality, Some(AudioQuality::Mp3_320k));
+    assert_eq!(parsed.settings.concurrency, 3);
+
+    let dir_type = std::thread::current()
+        .name()
+        .unwrap_or("roundtrip")
+        .to_string();
+    let tmp_dir = std::env::temp_dir().join(format!("ghita_failed_queue_{}", dir_type));
+    let _ = std::fs::remove_dir_all(&tmp_dir);
+    std::fs::create_dir_all(&tmp_dir).unwrap();
+    std::fs::write(tmp_dir.join("failed_tasks.json"), &json).unwrap();
+
+    let (loaded_settings, loaded_tasks) = BatchProcessor::retry_from_file(&tmp_dir).unwrap();
+    assert_eq!(loaded_settings.format, AudioFormat::Mp3);
+    assert_eq!(loaded_tasks.len(), 1);
+    assert_eq!(loaded_tasks[0].source_or_search, task.source_or_search);
+    assert!(tmp_dir.join("failed_tasks.json").exists());
+
+    let (second_settings, second_tasks) = BatchProcessor::retry_from_file(&tmp_dir).unwrap();
+    assert_eq!(second_settings.concurrency, 3);
+    assert_eq!(second_tasks.len(), 1);
+
+    let _ = std::fs::remove_dir_all(&tmp_dir);
+
+    let missing_dir = std::env::temp_dir().join("ghita_failed_queue_missing");
+    let _ = std::fs::remove_dir_all(&missing_dir);
+    assert!(BatchProcessor::retry_from_file(&missing_dir).is_err());
+}
+
+#[test]
+fn test_ensure_unique_path_reserves_atomically() {
+    use ghita_download::utils::file_helper::{clean_path, ensure_unique_path};
+    use std::path::Path;
+
+    let base = std::env::temp_dir().join("ghita_unique_path_test");
+    let _ = std::fs::remove_dir_all(&base);
+    std::fs::create_dir_all(&base).unwrap();
+
+    let first = ensure_unique_path(&base, "Same Track", "mp3");
+    let second = ensure_unique_path(&base, "Same Track", "mp3");
+    assert_ne!(
+        first, second,
+        "hai lần cấp phát cùng tên phải trả về hai đường dẫn khác nhau"
+    );
+    assert!(
+        first.exists(),
+        "ensure_unique_path phải giữ chỗ bằng cách tạo tệp"
+    );
+    assert!(clean_path(Path::new(&first)).exists());
+
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+#[test]
+fn test_download_settings_legacy_json_defaults() {
+    let legacy = r#"{"output_dir":"D:\\Music","format":"Mp3","quality":"Mp3_320k"}"#;
+    let settings: DownloadSettings = serde_json::from_str(legacy).unwrap();
+    assert_eq!(settings.format, AudioFormat::Mp3);
+    assert_eq!(settings.quality, Some(AudioQuality::Mp3_320k));
+    assert_eq!(settings.video_resolution, None);
+    assert_eq!(settings.concurrency, 3);
+}
+
+#[test]
+fn test_app_config_legacy_json_loads() {
+    let legacy =
+        r#"{"last_output_dir":"D:\\Music","last_format":"Wav","last_quality":"Wav_16bit_44k"}"#;
+    let cfg: AppConfig = serde_json::from_str(legacy).unwrap();
+    assert_eq!(cfg.last_format, Some(AudioFormat::Wav));
+    assert_eq!(cfg.video_resolution, Some(1080));
+}
+
+#[test]
+fn test_audio_quality_file_extension_new_formats() {
+    assert_eq!(
+        AudioQuality::Mp3_320k.file_extension(AudioFormat::Original),
+        "m4a"
+    );
+    assert_eq!(
+        AudioQuality::Mp3_128k.file_extension(AudioFormat::Original),
+        "m4a"
+    );
+    assert_eq!(
+        AudioQuality::Mp3_320k.file_extension(AudioFormat::Video),
+        "mp4"
+    );
+    assert_eq!(
+        AudioQuality::Wav_24bit_48k.file_extension(AudioFormat::Video),
+        "mp4"
+    );
 }

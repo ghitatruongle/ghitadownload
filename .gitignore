@@ -52,5 +52,7 @@ $RECYCLE.BIN/
 ehthumbs.db
 ehthumbs_vista.db
 
-# Logs
+# Logs & Diffs
 *.log
+*.diff
+*.patch

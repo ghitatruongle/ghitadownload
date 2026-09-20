@@ -6,13 +6,46 @@ use std::path::{Path, PathBuf};
 pub enum AudioFormat {
     Mp3,
     Wav,
+    Original,
+    Video,
 }
 
 impl fmt::Display for AudioFormat {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            AudioFormat::Mp3 => write!(f, "MP3 (.mp3) - Tương thích mọi thiết bị, dung lượng nhỏ gọn"),
-            AudioFormat::Wav => write!(f, "WAV (.wav) - Âm thanh Lossless không nén chuẩn phòng thu"),
+            AudioFormat::Mp3 => write!(
+                f,
+                "MP3 (.mp3) - Tương thích mọi thiết bị, dung lượng nhỏ gọn"
+            ),
+            AudioFormat::Wav => write!(
+                f,
+                "WAV (.wav) - Âm thanh Lossless không nén chuẩn phòng thu"
+            ),
+            AudioFormat::Original => write!(
+                f,
+                "ORIGINAL (M4A/Opus) - Giữ nguyên luồng âm thanh gốc, không chuyển mã"
+            ),
+            AudioFormat::Video => write!(
+                f,
+                "VIDEO (.mp4) - Giữ nguyên video hình ảnh, không chuyển mã"
+            ),
+        }
+    }
+}
+
+impl std::str::FromStr for AudioFormat {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "mp3" => Ok(AudioFormat::Mp3),
+            "wav" => Ok(AudioFormat::Wav),
+            "original" | "m4a" | "opus" => Ok(AudioFormat::Original),
+            "video" | "mp4" => Ok(AudioFormat::Video),
+            other => Err(format!(
+                "Định dạng không hợp lệ: {} (chấp nhận: mp3, wav, original, video)",
+                other
+            )),
         }
     }
 }
@@ -58,6 +91,8 @@ impl AudioQuality {
         match format {
             AudioFormat::Mp3 => "mp3",
             AudioFormat::Wav => "wav",
+            AudioFormat::Original => "m4a",
+            AudioFormat::Video => "mp4",
         }
     }
 }
@@ -65,26 +100,81 @@ impl AudioQuality {
 impl fmt::Display for AudioQuality {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            AudioQuality::Mp3_320k => write!(f, "320 kbps [Cực cao / Best] - Chuẩn MP3 phòng thu cao cấp nhất"),
-            AudioQuality::Mp3_256k => write!(f, "256 kbps [Rất cao / High] - Chuẩn gốc YouTube Music"),
-            AudioQuality::Mp3_192k => write!(f, "192 kbps [Chuẩn / Standard] - Chất lượng nhạc tiêu chuẩn"),
-            AudioQuality::Mp3_128k => write!(f, "128 kbps [Trung bình / Medium] - Nhẹ, tiết kiệm 50% bộ nhớ"),
-            AudioQuality::Mp3_96k  => write!(f, "96 kbps  [Thấp / Low] - Phù hợp cho nghe nói/podcast"),
-            AudioQuality::Mp3_64k  => write!(f, "64 kbps  [Thấp nhất / Lowest] - Dung lượng siêu nhỏ"),
+            AudioQuality::Mp3_320k => write!(
+                f,
+                "320 kbps [Cực cao / Best] - Chuẩn MP3 phòng thu cao cấp nhất"
+            ),
+            AudioQuality::Mp3_256k => {
+                write!(f, "256 kbps [Rất cao / High] - Chuẩn gốc YouTube Music")
+            }
+            AudioQuality::Mp3_192k => write!(
+                f,
+                "192 kbps [Chuẩn / Standard] - Chất lượng nhạc tiêu chuẩn"
+            ),
+            AudioQuality::Mp3_128k => write!(
+                f,
+                "128 kbps [Trung bình / Medium] - Nhẹ, tiết kiệm 50% bộ nhớ"
+            ),
+            AudioQuality::Mp3_96k => {
+                write!(f, "96 kbps  [Thấp / Low] - Phù hợp cho nghe nói/podcast")
+            }
+            AudioQuality::Mp3_64k => {
+                write!(f, "64 kbps  [Thấp nhất / Lowest] - Dung lượng siêu nhỏ")
+            }
 
-            AudioQuality::Wav_24bit_48k => write!(f, "24-bit PCM / 48,000 Hz [Master Studio - Cao nhất] - Lossless chuẩn phòng thu"),
-            AudioQuality::Wav_16bit_44k => write!(f, "16-bit PCM / 44,100 Hz [CD Quality - Chuẩn] - Lossless nguyên bản đĩa CD"),
-            AudioQuality::Wav_16bit_22k => write!(f, "16-bit PCM / 22,050 Hz [Radio Quality - Thấp] - Giảm bớt dung lượng WAV"),
-            AudioQuality::Wav_8bit_11k  => write!(f, "8-bit PCM / 11,025 Hz  [Lo-Fi - Thấp nhất] - Dung lượng WAV nhỏ nhất"),
+            AudioQuality::Wav_24bit_48k => write!(
+                f,
+                "24-bit PCM / 48,000 Hz [Master Studio - Cao nhất] - Lossless chuẩn phòng thu"
+            ),
+            AudioQuality::Wav_16bit_44k => write!(
+                f,
+                "16-bit PCM / 44,100 Hz [CD Quality - Chuẩn] - Lossless nguyên bản đĩa CD"
+            ),
+            AudioQuality::Wav_16bit_22k => write!(
+                f,
+                "16-bit PCM / 22,050 Hz [Radio Quality - Thấp] - Giảm bớt dung lượng WAV"
+            ),
+            AudioQuality::Wav_8bit_11k => write!(
+                f,
+                "8-bit PCM / 11,025 Hz  [Lo-Fi - Thấp nhất] - Dung lượng WAV nhỏ nhất"
+            ),
         }
     }
+}
+
+impl std::str::FromStr for AudioQuality {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "320k" => Ok(AudioQuality::Mp3_320k),
+            "256k" => Ok(AudioQuality::Mp3_256k),
+            "192k" => Ok(AudioQuality::Mp3_192k),
+            "128k" => Ok(AudioQuality::Mp3_128k),
+            "96k" => Ok(AudioQuality::Mp3_96k),
+            "64k" => Ok(AudioQuality::Mp3_64k),
+            "24bit48k" => Ok(AudioQuality::Wav_24bit_48k),
+            "16bit44k" => Ok(AudioQuality::Wav_16bit_44k),
+            "16bit22k" => Ok(AudioQuality::Wav_16bit_22k),
+            "8bit11k" => Ok(AudioQuality::Wav_8bit_11k),
+            other => Err(format!("Chất lượng không hợp lệ: {}", other)),
+        }
+    }
+}
+
+fn default_concurrency() -> usize {
+    3
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DownloadSettings {
     pub output_dir: PathBuf,
     pub format: AudioFormat,
-    pub quality: AudioQuality,
+    pub quality: Option<AudioQuality>,
+    #[serde(default)]
+    pub video_resolution: Option<u32>,
+    #[serde(default = "default_concurrency")]
+    pub concurrency: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -92,6 +182,12 @@ pub struct AppConfig {
     pub last_output_dir: Option<PathBuf>,
     pub last_format: Option<AudioFormat>,
     pub last_quality: Option<AudioQuality>,
+    #[serde(default = "default_video_resolution")]
+    pub video_resolution: Option<u32>,
+}
+
+fn default_video_resolution() -> Option<u32> {
+    Some(1080)
 }
 
 impl Default for AppConfig {
@@ -104,6 +200,7 @@ impl Default for AppConfig {
             last_output_dir: Some(default_dir),
             last_format: Some(AudioFormat::Mp3),
             last_quality: Some(AudioQuality::Mp3_320k),
+            video_resolution: default_video_resolution(),
         }
     }
 }
@@ -137,12 +234,22 @@ impl AppConfig {
         }
     }
 
-    pub fn update_last_used(&mut self, output_dir: &Path, format: AudioFormat, quality: AudioQuality) {
+    pub fn update_last_used(
+        &mut self,
+        output_dir: &Path,
+        format: AudioFormat,
+        quality: AudioQuality,
+    ) {
         let s = output_dir.to_string_lossy();
         let cleaned = s.trim().trim_matches(|c| c == '"' || c == '\'').trim();
         self.last_output_dir = Some(PathBuf::from(cleaned));
         self.last_format = Some(format);
         self.last_quality = Some(quality);
+        self.save();
+    }
+
+    pub fn set_video_resolution(&mut self, resolution: Option<u32>) {
+        self.video_resolution = resolution;
         self.save();
     }
 }

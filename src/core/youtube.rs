@@ -9,6 +9,7 @@ pub struct YouTubeTrackMeta {
     pub title: String,
     pub uploader: String,
     pub thumbnail_url: Option<String>,
+    pub duration_secs: Option<f64>,
     pub direct_url: String,
 }
 
@@ -32,11 +33,12 @@ impl<'a> YouTubeClient<'a> {
         }
         cmd.arg("--no-playlist")
             .arg("--no-warnings")
-            .arg("--no-check-certificates")
-            .arg("--socket-timeout").arg("10")
-            .arg("--extractor-args").arg("youtube:player_client=android,web")
+            .arg("--socket-timeout")
+            .arg("10")
+            .arg("--extractor-args")
+            .arg("youtube:player_client=android,web")
             .arg("--print")
-            .arg("%(id)s###%(title)s###%(uploader)s###%(thumbnail)s")
+            .arg("%(id)s###%(title)s###%(uploader)s###%(thumbnail)s###%(duration)s")
             .arg(url_or_query);
 
         let output = cmd.output()?;
@@ -46,7 +48,10 @@ impl<'a> YouTubeClient<'a> {
         }
 
         let out_str = String::from_utf8_lossy(&output.stdout);
-        let line = out_str.lines().next().ok_or_else(|| anyhow!("Không nhận được phản hồi từ YouTube"))?;
+        let line = out_str
+            .lines()
+            .next()
+            .ok_or_else(|| anyhow!("Không nhận được phản hồi từ YouTube"))?;
         let parts: Vec<&str> = line.split("###").collect();
 
         if parts.len() < 3 {
@@ -56,7 +61,15 @@ impl<'a> YouTubeClient<'a> {
         let id = parts[0].trim().to_string();
         let title = parts[1].trim().to_string();
         let uploader = parts[2].trim().to_string();
-        let thumbnail_url = parts.get(3).map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+        let thumbnail_url = parts
+            .get(3)
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+        let duration_secs = parts
+            .get(4)
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty() && *s != "NA")
+            .and_then(|s| s.parse::<f64>().ok());
         let direct_url = format!("https://www.youtube.com/watch?v={}", id);
 
         Ok(YouTubeTrackMeta {
@@ -64,6 +77,7 @@ impl<'a> YouTubeClient<'a> {
             title,
             uploader,
             thumbnail_url,
+            duration_secs,
             direct_url,
         })
     }
@@ -75,7 +89,6 @@ impl<'a> YouTubeClient<'a> {
         }
         cmd.arg("--no-playlist")
             .arg("--no-warnings")
-            .arg("--no-check-certificates")
             .arg("--socket-timeout").arg("12")
             .arg("--user-agent").arg("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36")
             .arg("--print")
@@ -89,7 +102,10 @@ impl<'a> YouTubeClient<'a> {
         }
 
         let out_str = String::from_utf8_lossy(&output.stdout);
-        let line = out_str.lines().next().ok_or_else(|| anyhow!("Không nhận được phản hồi từ {}", platform_name))?;
+        let line = out_str
+            .lines()
+            .next()
+            .ok_or_else(|| anyhow!("Không nhận được phản hồi từ {}", platform_name))?;
         let parts: Vec<&str> = line.split("###").collect();
 
         if parts.is_empty() {
@@ -109,13 +125,17 @@ impl<'a> YouTubeClient<'a> {
         } else {
             platform_name.to_string()
         };
-        let thumbnail_url = parts.get(3).map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+        let thumbnail_url = parts
+            .get(3)
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
 
         Ok(YouTubeTrackMeta {
             id,
             title,
             uploader,
             thumbnail_url,
+            duration_secs: None,
             direct_url: url.to_string(),
         })
     }
@@ -127,9 +147,10 @@ impl<'a> YouTubeClient<'a> {
         }
         cmd.arg("--flat-playlist")
             .arg("--no-warnings")
-            .arg("--no-check-certificates")
-            .arg("--socket-timeout").arg("15")
-            .arg("--extractor-args").arg("youtube:player_client=android,web")
+            .arg("--socket-timeout")
+            .arg("15")
+            .arg("--extractor-args")
+            .arg("youtube:player_client=android,web")
             .arg("--print")
             .arg("%(id)s###%(title)s###%(uploader)s")
             .arg(playlist_url);
@@ -160,6 +181,7 @@ impl<'a> YouTubeClient<'a> {
                     title,
                     uploader,
                     thumbnail_url: None,
+                    duration_secs: None,
                     direct_url,
                 });
             }

@@ -91,7 +91,10 @@ impl MultiLinkInput {
                                 *current_idx += 1;
                                 *cursor_char_pos = 0;
                             } else {
-                                *status_message = Some("Dòng hiện tại đang trống. Nhập link rồi nhấn [↓] tiếp.".to_string());
+                                *status_message = Some(
+                                    "Dòng hiện tại đang trống. Nhập link rồi nhấn [↓] tiếp."
+                                        .to_string(),
+                                );
                             }
                         }
 
@@ -187,7 +190,9 @@ impl MultiLinkInput {
                                     .collect();
 
                                 if valid_links.is_empty() {
-                                    *status_message = Some("⚠ Vui lòng nhập ít nhất 1 liên kết hợp lệ!".to_string());
+                                    *status_message = Some(
+                                        "⚠ Vui lòng nhập ít nhất 1 liên kết hợp lệ!".to_string(),
+                                    );
                                 } else {
                                     return Ok(Some(valid_links));
                                 }
@@ -198,19 +203,17 @@ impl MultiLinkInput {
                             code: KeyCode::Char(c),
                             modifiers,
                             ..
-                        } => {
-                            if modifiers.is_empty() || modifiers == KeyModifiers::SHIFT {
-                                if c == '\n' || c == '\r' {
-                                    links.push(String::new());
-                                    *current_idx += 1;
-                                    *cursor_char_pos = 0;
-                                } else {
-                                    let mut chars: Vec<char> = links[*current_idx].chars().collect();
-                                    if *cursor_char_pos <= chars.len() {
-                                        chars.insert(*cursor_char_pos, c);
-                                        links[*current_idx] = chars.into_iter().collect();
-                                        *cursor_char_pos += 1;
-                                    }
+                        } if modifiers.is_empty() || modifiers == KeyModifiers::SHIFT => {
+                            if c == '\n' || c == '\r' {
+                                links.push(String::new());
+                                *current_idx += 1;
+                                *cursor_char_pos = 0;
+                            } else {
+                                let mut chars: Vec<char> = links[*current_idx].chars().collect();
+                                if *cursor_char_pos <= chars.len() {
+                                    chars.insert(*cursor_char_pos, c);
+                                    links[*current_idx] = chars.into_iter().collect();
+                                    *cursor_char_pos += 1;
                                 }
                             }
                         }
@@ -234,7 +237,11 @@ impl MultiLinkInput {
         let max_content_width = (term_cols as usize).saturating_sub(22).max(20);
 
         if last_rendered_lines > 0 {
-            execute!(stdout, cursor::MoveUp(last_rendered_lines), cursor::MoveToColumn(0))?;
+            execute!(
+                stdout,
+                cursor::MoveUp(last_rendered_lines),
+                cursor::MoveToColumn(0)
+            )?;
         }
         execute!(stdout, Clear(ClearType::FromCursorDown))?;
 
@@ -244,14 +251,31 @@ impl MultiLinkInput {
         println!("╔{}╗", header_border);
         println!(
             "║ {:<width$} ║",
-            "NHẬP DANH SÁCH LIÊN KẾT (HỖ TRỢ NHIỀU LIÊN KẾT LIÊN TIẾP)".cyan().bold(),
+            "NHẬP DANH SÁCH LIÊN KẾT (HỖ TRỢ NHIỀU LIÊN KẾT LIÊN TIẾP)"
+                .cyan()
+                .bold(),
             width = term_cols.saturating_sub(4) as usize
         );
         println!("╚{}╝", header_border);
-        println!(" {}", "• Nhập link rồi ấn [Mũi tên XUỐNG ↓] để nhập liên kết thứ 2, thứ 3...".yellow());
-        println!(" {}", "• Dùng [↑] và [↓] để di chuyển giữa các dòng | [Backspace] để xóa dòng trống".bright_black());
-        println!(" {}", "• Hỗ trợ dán (Ctrl+V) hàng loạt hoặc nhập file .txt (ví dụ: links.txt)".bright_black());
-        println!(" {}", "• Nhấn [ENTER] khi hoàn tất để bắt đầu tải | [ESC] để quay lại".green().bold());
+        println!(
+            " {}",
+            "• Nhập link rồi ấn [Mũi tên XUỐNG ↓] để nhập liên kết thứ 2, thứ 3...".yellow()
+        );
+        println!(
+            " {}",
+            "• Dùng [↑] và [↓] để di chuyển giữa các dòng | [Backspace] để xóa dòng trống"
+                .bright_black()
+        );
+        println!(
+            " {}",
+            "• Hỗ trợ dán (Ctrl+V) hàng loạt hoặc nhập file .txt (ví dụ: links.txt)".bright_black()
+        );
+        println!(
+            " {}",
+            "• Nhấn [ENTER] khi hoàn tất để bắt đầu tải | [ESC] để quay lại"
+                .green()
+                .bold()
+        );
         println!("{}", "-".repeat(term_cols as usize));
         lines_drawn += 8;
 
@@ -287,7 +311,11 @@ impl MultiLinkInput {
 
             if is_active {
                 cursor_row_offset = lines_drawn;
-                let prompt_prefix = format!("  {} {:<5} > ", "►".green().bold(), prefix_num.cyan().bold());
+                let prompt_prefix = format!(
+                    "  {} {:<5} > ",
+                    "►".green().bold(),
+                    prefix_num.cyan().bold()
+                );
                 print!("{}{}", prompt_prefix, display_text);
                 println!();
                 cursor_col = (11 + display_cursor_pos) as u16;
@@ -305,8 +333,11 @@ impl MultiLinkInput {
             let total_valid = links.iter().filter(|s| !s.trim().is_empty()).count();
             println!(
                 "  {}",
-                format!("(Đã nhập: {} liên kết | Nhấn [ENTER] để tải ngay)", total_valid)
-                    .bright_black()
+                format!(
+                    "(Đã nhập: {} liên kết | Nhấn [ENTER] để tải ngay)",
+                    total_valid
+                )
+                .bright_black()
             );
             lines_drawn += 1;
         }

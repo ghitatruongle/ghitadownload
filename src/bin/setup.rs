@@ -29,17 +29,34 @@ fn main() {
     }
 
     if !is_silent {
-        println!("\n{}", "Nhấn phím [ENTER] để đóng cửa sổ này...".yellow().bold());
+        println!(
+            "\n{}",
+            "Nhấn phím [ENTER] để đóng cửa sổ này...".yellow().bold()
+        );
         let mut _pause = String::new();
         let _ = io::stdin().read_line(&mut _pause);
     }
 }
 
 fn print_banner() {
-    println!("{}", "╔══════════════════════════════════════════════════════════════════╗".cyan());
-    println!("{}", "║              TRÌNH CÀI ĐẶT GHITA DOWNLOADER (CLI)                ║".cyan().bold());
-    println!("{}", "║    Tải nhạc YouTube, Spotify, Suno AI chất lượng cao mọi lúc     ║".bright_white());
-    println!("{}", "╚══════════════════════════════════════════════════════════════════╝".cyan());
+    println!(
+        "{}",
+        "╔══════════════════════════════════════════════════════════════════╗".cyan()
+    );
+    println!(
+        "{}",
+        "║              TRÌNH CÀI ĐẶT GHITA DOWNLOADER (CLI)                ║"
+            .cyan()
+            .bold()
+    );
+    println!(
+        "{}",
+        "║    Tải nhạc YouTube, Spotify, Suno AI chất lượng cao mọi lúc     ║".bright_white()
+    );
+    println!(
+        "{}",
+        "╚══════════════════════════════════════════════════════════════════╝".cyan()
+    );
     println!();
 }
 
@@ -49,7 +66,10 @@ fn handle_install(default_dir: &Path, is_silent: bool) {
     if !is_silent {
         println!("📁 {}", "Vị trí cài đặt phần mềm:".bright_white().bold());
         println!("   Mặc định: {}", default_dir.display().to_string().cyan());
-        print!("   👉 Nhấn [{}] để cài ngay, hoặc nhập đường dẫn khác: ", "ENTER".green().bold());
+        print!(
+            "   👉 Nhấn [{}] để cài ngay, hoặc nhập đường dẫn khác: ",
+            "ENTER".green().bold()
+        );
         let _ = io::stdout().flush();
 
         let mut user_input = String::new();
@@ -62,7 +82,10 @@ fn handle_install(default_dir: &Path, is_silent: bool) {
         println!();
     }
 
-    println!("⏳ Đang chuẩn bị thư mục cài đặt: {}", install_dir.display().to_string().yellow());
+    println!(
+        "⏳ Đang chuẩn bị thư mục cài đặt: {}",
+        install_dir.display().to_string().yellow()
+    );
     let bin_dir = install_dir.join("bin");
 
     if let Err(e) = fs::create_dir_all(&bin_dir) {
@@ -80,11 +103,19 @@ fn handle_install(default_dir: &Path, is_silent: bool) {
     } else {
         if let Some(src_app) = find_local_app() {
             if let Err(e) = fs::copy(&src_app, &target_app_path) {
-                println!("❌ {}", format!("Lỗi sao chép từ {}: {}", src_app.display(), e).red());
+                println!(
+                    "❌ {}",
+                    format!("Lỗi sao chép từ {}: {}", src_app.display(), e).red()
+                );
                 return;
             }
         } else {
-            println!("{}", "❌ Không tìm thấy tệp nhúng hoặc tệp ghitadownload.exe để cài đặt!".red().bold());
+            println!(
+                "{}",
+                "❌ Không tìm thấy tệp nhúng hoặc tệp ghitadownload.exe để cài đặt!"
+                    .red()
+                    .bold()
+            );
             return;
         }
     }
@@ -120,7 +151,10 @@ fn handle_install(default_dir: &Path, is_silent: bool) {
     println!("⚙️  Đang cấu hình biến môi trường PATH người dùng...");
     match add_to_user_path(&install_dir) {
         Ok(true) => {
-            println!("✅ Đã thêm {} vào biến môi trường PATH!", install_dir.display().to_string().green());
+            println!(
+                "✅ Đã thêm {} vào biến môi trường PATH!",
+                install_dir.display().to_string().green()
+            );
         }
         Ok(false) => {
             println!("ℹ️  Thư mục này đã có sẵn trong biến môi trường PATH.");
@@ -131,24 +165,51 @@ fn handle_install(default_dir: &Path, is_silent: bool) {
     }
 
     println!();
-    println!("{}", "══════════════════════════════════════════════════════════════════".green());
-    println!("{}", "🎉 CÀI ĐẶT GHITA DOWNLOADER THÀNH CÔNG!".green().bold());
-    println!("{}", "══════════════════════════════════════════════════════════════════".green());
-    println!("📁 Vị trí cài đặt  : {}", install_dir.display().to_string().cyan());
-    println!("🚀 Lệnh khởi chạy  : {} hoặc {}", "ghitadownload".yellow().bold(), "ghita".yellow().bold());
+    println!(
+        "{}",
+        "══════════════════════════════════════════════════════════════════".green()
+    );
+    println!(
+        "{}",
+        "🎉 CÀI ĐẶT GHITA DOWNLOADER THÀNH CÔNG!".green().bold()
+    );
+    println!(
+        "{}",
+        "══════════════════════════════════════════════════════════════════".green()
+    );
+    println!(
+        "📁 Vị trí cài đặt  : {}",
+        install_dir.display().to_string().cyan()
+    );
+    println!(
+        "🚀 Lệnh khởi chạy  : {} hoặc {}",
+        "ghitadownload".yellow().bold(),
+        "ghita".yellow().bold()
+    );
     println!();
     println!("{}", "💡 CÁCH SỬ DỤNG:".bright_white().bold());
     println!("   1. Mở cửa sổ Terminal hoặc PowerShell/CMD mới tại bất kỳ thư mục nào.");
-    println!("   2. Gõ lệnh: {} (hoặc {})", "ghitadownload".green().bold(), "ghita".green().bold());
+    println!(
+        "   2. Gõ lệnh: {} (hoặc {})",
+        "ghitadownload".green().bold(),
+        "ghita".green().bold()
+    );
     println!("   3. Ứng dụng sẽ mở ngay tại thư mục hiện tại của bạn để lưu bài hát!");
     println!();
-    println!("🗑️  Khi cần gỡ cài đặt, bạn chỉ cần chạy: {} hoặc file {}", "ghitadownload-setup.exe --uninstall".yellow(), "uninstall.bat".yellow());
-    println!("{}", "══════════════════════════════════════════════════════════════════".green());
+    println!(
+        "🗑️  Khi cần gỡ cài đặt, bạn chỉ cần chạy: {} hoặc file {}",
+        "ghitadownload-setup.exe --uninstall".yellow(),
+        "uninstall.bat".yellow()
+    );
+    println!(
+        "{}",
+        "══════════════════════════════════════════════════════════════════".green()
+    );
 }
 
 fn handle_uninstall(install_dir: &Path) {
     println!("⏳ Đang tiến hành gỡ cài đặt Ghita Downloader...");
-    
+
     match remove_from_user_path(install_dir) {
         Ok(_) => println!("✅ Đã xóa đường dẫn khỏi biến môi trường PATH người dùng."),
         Err(e) => println!("⚠️  Lỗi cập nhật PATH: {}", e),
@@ -215,7 +276,11 @@ fn add_to_user_path(dir: &Path) -> Result<bool, String> {
     let dir_str = dir.to_str().ok_or("Đường dẫn không hợp lệ")?;
 
     let output = Command::new("powershell")
-        .args(["-NoProfile", "-Command", "[Environment]::GetEnvironmentVariable('Path', 'User')"])
+        .args([
+            "-NoProfile",
+            "-Command",
+            "[Environment]::GetEnvironmentVariable('Path', 'User')",
+        ])
         .output()
         .map_err(|e| e.to_string())?;
 
@@ -223,7 +288,9 @@ fn add_to_user_path(dir: &Path) -> Result<bool, String> {
     let parts: Vec<&str> = current_path.split(';').map(|s| s.trim()).collect();
 
     let already_in = parts.iter().any(|&p| {
-        p.eq_ignore_ascii_case(dir_str) || p.trim_end_matches('\\').eq_ignore_ascii_case(dir_str.trim_end_matches('\\'))
+        p.eq_ignore_ascii_case(dir_str)
+            || p.trim_end_matches('\\')
+                .eq_ignore_ascii_case(dir_str.trim_end_matches('\\'))
     });
 
     if already_in {
@@ -257,7 +324,11 @@ fn remove_from_user_path(dir: &Path) -> Result<(), String> {
     let dir_str = dir.to_str().ok_or("Đường dẫn không hợp lệ")?;
 
     let output = Command::new("powershell")
-        .args(["-NoProfile", "-Command", "[Environment]::GetEnvironmentVariable('Path', 'User')"])
+        .args([
+            "-NoProfile",
+            "-Command",
+            "[Environment]::GetEnvironmentVariable('Path', 'User')",
+        ])
         .output()
         .map_err(|e| e.to_string())?;
 
@@ -268,7 +339,9 @@ fn remove_from_user_path(dir: &Path) -> Result<(), String> {
         .filter(|&p| {
             !p.is_empty()
                 && !p.eq_ignore_ascii_case(dir_str)
-                && !p.trim_end_matches('\\').eq_ignore_ascii_case(dir_str.trim_end_matches('\\'))
+                && !p
+                    .trim_end_matches('\\')
+                    .eq_ignore_ascii_case(dir_str.trim_end_matches('\\'))
         })
         .collect();
 

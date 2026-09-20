@@ -6,4 +6,5 @@ pub mod spotify;
 pub mod suno;
 pub mod tagger;
 pub mod transcoder;
+pub mod verify;
 pub mod youtube;

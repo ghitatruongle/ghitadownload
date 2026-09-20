@@ -2,9 +2,10 @@ use anyhow::Result;
 use id3::frame::{Picture, PictureType};
 use id3::{Tag, TagLike, Version};
 use reqwest::Client;
+use serde::{Deserialize, Serialize};
 use std::path::Path;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AudioMetadata {
     pub title: String,
     pub artists: Vec<String>,
@@ -25,9 +26,13 @@ impl Default for Tagger {
 
 impl Tagger {
     pub fn new() -> Self {
-        Self {
-            http_client: Client::new(),
-        }
+        let http_client = Client::builder()
+            .timeout(std::time::Duration::from_secs(25))
+            .connect_timeout(std::time::Duration::from_secs(10))
+            .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36")
+            .build()
+            .unwrap_or_default();
+        Self { http_client }
     }
 
     pub async fn tag_mp3(&self, file_path: &Path, meta: &AudioMetadata) -> Result<()> {
@@ -43,7 +48,9 @@ impl Tagger {
 
         if let Some(ref raw_cover_url) = meta.cover_url {
             let normalized_url = if raw_cover_url.contains("vi_webp") {
-                raw_cover_url.replace("vi_webp", "vi").replace(".webp", ".jpg")
+                raw_cover_url
+                    .replace("vi_webp", "vi")
+                    .replace(".webp", ".jpg")
             } else if raw_cover_url.ends_with(".webp") {
                 raw_cover_url.replace(".webp", ".jpg")
             } else {
