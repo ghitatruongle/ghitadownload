@@ -45,7 +45,7 @@ fn print_banner() {
     );
     println!(
         "{}",
-        "║              TRÌNH CÀI ĐẶT GHITA DOWNLOADER (CLI)                ║"
+        "║             TRÌNH CÀI ĐẶT GHITA DOWNLOADER v0.0.2 (CLI)          ║"
             .cyan()
             .bold()
     );
@@ -132,6 +132,54 @@ fn handle_install(default_dir: &Path, is_silent: bool) {
         let _ = fs::copy(src_ytdlp, &target_ytdlp_path);
     }
 
+    println!("🔍 Đang kiểm tra công cụ chuyển mã FFmpeg...");
+    let ffmpeg_exists = Command::new("ffmpeg")
+        .arg("-version")
+        .output()
+        .is_ok_and(|o| o.status.success())
+        || bin_dir.join("ffmpeg.exe").exists()
+        || install_dir.join("ffmpeg.exe").exists();
+
+    if !ffmpeg_exists {
+        println!("⚠️  Chưa phát hiện FFmpeg trên hệ thống.");
+        println!("⏳ Đang tự động thiết lập FFmpeg cho máy tính của bạn...");
+        let target_ffmpeg = bin_dir.join("ffmpeg.exe");
+        let ps_script = format!(
+            "$ProgressPreference = 'SilentlyContinue'; \
+             if (Get-Command winget -ErrorAction SilentlyContinue) {{ \
+                 winget install Gyan.FFmpeg --accept-package-agreements --accept-source-agreements --silent \
+             }} else {{ \
+                 $zip = Join-Path $env:TEMP 'ffmpeg_setup.zip'; \
+                 $tmp = Join-Path $env:TEMP 'ffmpeg_setup_tmp'; \
+                 Invoke-WebRequest -Uri 'https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip' -OutFile $zip; \
+                 Expand-Archive -Path $zip -DestinationPath $tmp -Force; \
+                 $bin = Get-ChildItem -Path $tmp -Recurse -Filter 'ffmpeg.exe' | Select-Object -First 1; \
+                 if ($bin) {{ Copy-Item $bin.FullName -Destination '{}' -Force }}; \
+                 Remove-Item -Path $zip -Force -ErrorAction SilentlyContinue; \
+                 Remove-Item -Path $tmp -Recurse -Force -ErrorAction SilentlyContinue; \
+             }}",
+            target_ffmpeg.display().to_string().replace('\\', "\\\\")
+        );
+        let _ = Command::new("powershell")
+            .arg("-NoProfile")
+            .arg("-Command")
+            .arg(&ps_script)
+            .status();
+
+        if Command::new("ffmpeg")
+            .arg("-version")
+            .output()
+            .is_ok_and(|o| o.status.success())
+            || bin_dir.join("ffmpeg.exe").exists()
+        {
+            println!("✅ Đã thiết lập FFmpeg thành công!");
+        } else {
+            println!("⚠️  Chưa tự động cài được FFmpeg. Bạn có thể cài trong app bằng 1-click hoặc lệnh: winget install Gyan.FFmpeg");
+        }
+    } else {
+        println!("✅ Đã phát hiện FFmpeg trên hệ thống.");
+    }
+
     let uninstall_bat = install_dir.join("uninstall.bat");
     let bat_content = format!(
         "@echo off\r\n\
@@ -141,6 +189,7 @@ fn handle_install(default_dir: &Path, is_silent: bool) {
         del /q \"%~dp0ghitadownload.exe\" 2>nul\r\n\
         del /q \"%~dp0ghita.exe\" 2>nul\r\n\
         del /q \"%~dp0bin\\yt-dlp.exe\" 2>nul\r\n\
+        del /q \"%~dp0bin\\ffmpeg.exe\" 2>nul\r\n\
         rd /s /q \"%~dp0bin\" 2>nul\r\n\
         echo Da go bo Ghita khoi bien moi truong PATH va he thong thanh cong!\r\n\
         pause\r\n",
@@ -160,7 +209,7 @@ fn handle_install(default_dir: &Path, is_silent: bool) {
             println!("ℹ️  Thư mục này đã có sẵn trong biến môi trường PATH.");
         }
         Err(e) => {
-            println!("⚠️  Cảnh báo cài đặt PATH: {}", e.to_string().yellow());
+            println!("⚠️  Cảnh báo cài đặt PATH: {}", e.yellow());
         }
     }
 
@@ -212,7 +261,7 @@ fn handle_uninstall(install_dir: &Path) {
 
     match remove_from_user_path(install_dir) {
         Ok(_) => println!("✅ Đã xóa đường dẫn khỏi biến môi trường PATH người dùng."),
-        Err(e) => println!("⚠️  Lỗi cập nhật PATH: {}", e),
+        Err(e) => println!("⚠️  Lỗi cập nhật PATH: {e}"),
     }
 
     let _ = fs::remove_file(install_dir.join("ghitadownload.exe"));
@@ -285,7 +334,7 @@ fn add_to_user_path(dir: &Path) -> Result<bool, String> {
         .map_err(|e| e.to_string())?;
 
     let current_path = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    let parts: Vec<&str> = current_path.split(';').map(|s| s.trim()).collect();
+    let parts: Vec<&str> = current_path.split(';').map(str::trim).collect();
 
     let already_in = parts.iter().any(|&p| {
         p.eq_ignore_ascii_case(dir_str)
@@ -335,7 +384,7 @@ fn remove_from_user_path(dir: &Path) -> Result<(), String> {
     let current_path = String::from_utf8_lossy(&output.stdout).trim().to_string();
     let parts: Vec<&str> = current_path
         .split(';')
-        .map(|s| s.trim())
+        .map(str::trim)
         .filter(|&p| {
             !p.is_empty()
                 && !p.eq_ignore_ascii_case(dir_str)

@@ -38,18 +38,38 @@ pub struct CliArgs {
 
     #[arg(long)]
     pub retry_failed: bool,
+
+    #[arg(long = "update-ytdlp", visible_alias = "update-tools")]
+    pub update_ytdlp: bool,
+
+    #[arg(long = "keep-accents")]
+    pub keep_accents: bool,
 }
 
 impl CliArgs {
     pub fn is_headless(&self) -> bool {
-        !self.links.is_empty() || self.file.is_some() || self.retry_failed
+        self.update_ytdlp || !self.links.is_empty() || self.file.is_some() || self.retry_failed
     }
 
     pub async fn run_headless(&self) -> i32 {
-        let env = match CliApp::prepare_env() {
+        let env = match CliApp::prepare_env().await {
             Some(e) => e,
             None => return 1,
         };
+
+        if self.update_ytdlp {
+            println!("{}", "⏳ Đang kiểm tra và cập nhật yt-dlp...".cyan());
+            match crate::utils::env::update_ytdlp(&env.ytdlp_path) {
+                Ok(msg) => {
+                    println!("{} {}", "✔".green().bold(), msg);
+                    return 0;
+                }
+                Err(e) => {
+                    eprintln!("{} {}", "❌".red(), e);
+                    return 1;
+                }
+            }
+        }
 
         let config = AppConfig::load();
         let output_dir = self
@@ -78,9 +98,11 @@ impl CliArgs {
             },
             None => match format {
                 AudioFormat::Original | AudioFormat::Video => None,
-                AudioFormat::Mp3 => Some(config.last_quality.unwrap_or(AudioQuality::Mp3_320k)),
-                AudioFormat::Wav => {
-                    Some(config.last_quality.unwrap_or(AudioQuality::Wav_16bit_44k))
+                _ => {
+                    let last_q = config
+                        .last_quality
+                        .filter(|q| format.is_compatible_quality(*q));
+                    Some(last_q.unwrap_or_else(|| format.default_quality()))
                 }
             },
         };
@@ -99,12 +121,14 @@ impl CliArgs {
             None => config.video_resolution,
         };
 
+        let keep_accents = self.keep_accents || config.keep_accents;
         let settings = DownloadSettings {
             output_dir: output_dir.clone(),
             format,
             quality,
             video_resolution,
             concurrency: self.concurrency,
+            keep_accents,
         };
 
         let (settings, tasks) = if self.retry_failed {
@@ -150,6 +174,7 @@ impl CliArgs {
                             quality,
                             video_resolution,
                             concurrency: self.concurrency,
+                            keep_accents,
                         },
                         t,
                     )

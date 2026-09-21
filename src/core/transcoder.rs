@@ -31,10 +31,10 @@ impl Transcoder {
             AudioFormat::Mp3 => {
                 cmd.arg("-c:a").arg("libmp3lame");
                 let bitrate = match quality {
-                    AudioQuality::Mp3_320k => "320k",
-                    AudioQuality::Mp3_256k => "256k",
-                    AudioQuality::Mp3_192k => "192k",
-                    AudioQuality::Mp3_128k => "128k",
+                    AudioQuality::Mp3_320k | AudioQuality::Aac_320k => "320k",
+                    AudioQuality::Mp3_256k | AudioQuality::Aac_256k => "256k",
+                    AudioQuality::Mp3_192k | AudioQuality::Aac_192k => "192k",
+                    AudioQuality::Mp3_128k | AudioQuality::Aac_128k => "128k",
                     AudioQuality::Mp3_96k => "96k",
                     AudioQuality::Mp3_64k => "64k",
                     _ => "320k",
@@ -42,10 +42,10 @@ impl Transcoder {
                 cmd.arg("-b:a").arg(bitrate);
             }
             AudioFormat::Wav => match quality {
-                AudioQuality::Wav_24bit_48k => {
+                AudioQuality::Wav_24bit_48k | AudioQuality::Flac_24bit_48k => {
                     cmd.arg("-c:a").arg("pcm_s24le").arg("-ar").arg("48000");
                 }
-                AudioQuality::Wav_16bit_44k => {
+                AudioQuality::Wav_16bit_44k | AudioQuality::Flac_16bit_44k => {
                     cmd.arg("-c:a").arg("pcm_s16le").arg("-ar").arg("44100");
                 }
                 AudioQuality::Wav_16bit_22k => {
@@ -58,6 +58,46 @@ impl Transcoder {
                     cmd.arg("-c:a").arg("pcm_s16le").arg("-ar").arg("44100");
                 }
             },
+            AudioFormat::Flac => match quality {
+                AudioQuality::Flac_24bit_96k => {
+                    cmd.arg("-c:a")
+                        .arg("flac")
+                        .arg("-sample_fmt")
+                        .arg("s32")
+                        .arg("-ar")
+                        .arg("96000");
+                }
+                AudioQuality::Flac_24bit_48k | AudioQuality::Wav_24bit_48k => {
+                    cmd.arg("-c:a")
+                        .arg("flac")
+                        .arg("-sample_fmt")
+                        .arg("s32")
+                        .arg("-ar")
+                        .arg("48000");
+                }
+                AudioQuality::Flac_16bit_44k | AudioQuality::Wav_16bit_44k => {
+                    cmd.arg("-c:a")
+                        .arg("flac")
+                        .arg("-sample_fmt")
+                        .arg("s16")
+                        .arg("-ar")
+                        .arg("44100");
+                }
+                _ => {
+                    cmd.arg("-c:a").arg("flac").arg("-ar").arg("44100");
+                }
+            },
+            AudioFormat::Aac => {
+                cmd.arg("-c:a").arg("aac");
+                let bitrate = match quality {
+                    AudioQuality::Aac_320k | AudioQuality::Mp3_320k => "320k",
+                    AudioQuality::Aac_256k | AudioQuality::Mp3_256k => "256k",
+                    AudioQuality::Aac_192k | AudioQuality::Mp3_192k => "192k",
+                    AudioQuality::Aac_128k | AudioQuality::Mp3_128k => "128k",
+                    _ => "256k",
+                };
+                cmd.arg("-b:a").arg(bitrate);
+            }
             AudioFormat::Original | AudioFormat::Video => {
                 return Err(anyhow!("Không hỗ trợ chuyển mã cho định dạng {:?}", format));
             }
@@ -70,6 +110,10 @@ impl Transcoder {
 
         if let Some(year) = meta.release_year {
             cmd.arg("-metadata").arg(format!("date={}", year));
+        }
+
+        if let Some(tr) = meta.track_number {
+            cmd.arg("-metadata").arg(format!("track={}", tr));
         }
 
         cmd.arg(output_path);
@@ -103,6 +147,10 @@ impl Transcoder {
 
         if let Some(year) = meta.release_year {
             cmd.arg("-metadata").arg(format!("date={}", year));
+        }
+
+        if let Some(tr) = meta.track_number {
+            cmd.arg("-metadata").arg(format!("track={}", tr));
         }
 
         cmd.arg(output_path);

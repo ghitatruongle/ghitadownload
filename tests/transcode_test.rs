@@ -33,6 +33,8 @@ async fn test_transcode_and_tagging_pipeline() {
         album: "Ghita Test Album".to_string(),
         release_year: Some(2026),
         cover_url: None,
+        track_number: Some(1),
+        total_tracks: Some(10),
     };
 
     let mp3_320_path = test_dir.join("test_320k.mp3");
@@ -68,6 +70,50 @@ async fn test_transcode_and_tagging_pipeline() {
         size_64,
         size_320
     );
+
+    let flac_path = test_dir.join("test_flac.flac");
+    let res = transcoder.transcode(
+        &sample_wav,
+        &flac_path,
+        AudioFormat::Flac,
+        AudioQuality::Flac_24bit_48k,
+        &meta,
+    );
+    assert!(res.is_ok(), "FLAC transcode failed: {:?}", res.err());
+    assert!(flac_path.exists());
+
+    let flac_96_path = test_dir.join("test_flac_96k.flac");
+    let res_96 = transcoder.transcode(
+        &sample_wav,
+        &flac_96_path,
+        AudioFormat::Flac,
+        AudioQuality::Flac_24bit_96k,
+        &meta,
+    );
+    assert!(res_96.is_ok(), "FLAC 96k transcode failed: {:?}", res_96.err());
+    assert!(flac_96_path.exists());
+
+    let aac_path = test_dir.join("test_aac.m4a");
+    let res = transcoder.transcode(
+        &sample_wav,
+        &aac_path,
+        AudioFormat::Aac,
+        AudioQuality::Aac_256k,
+        &meta,
+    );
+    assert!(res.is_ok(), "AAC transcode failed: {:?}", res.err());
+    assert!(aac_path.exists());
+
+    let aac_320_path = test_dir.join("test_aac_320k.m4a");
+    let res_aac_320 = transcoder.transcode(
+        &sample_wav,
+        &aac_320_path,
+        AudioFormat::Aac,
+        AudioQuality::Aac_320k,
+        &meta,
+    );
+    assert!(res_aac_320.is_ok(), "AAC 320k transcode failed: {:?}", res_aac_320.err());
+    assert!(aac_320_path.exists());
 
     let wav_24_path = test_dir.join("test_24bit_48k.wav");
     let res = transcoder.transcode(
@@ -128,6 +174,8 @@ fn test_remux_copy_preserves_codec_and_duration() {
         album: "Remux Album".to_string(),
         release_year: Some(2026),
         cover_url: None,
+        track_number: None,
+        total_tracks: None,
     };
 
     let out_wav = test_dir.join("output_remux.wav");

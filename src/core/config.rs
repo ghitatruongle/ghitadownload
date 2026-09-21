@@ -6,6 +6,8 @@ use std::path::{Path, PathBuf};
 pub enum AudioFormat {
     Mp3,
     Wav,
+    Flac,
+    Aac,
     Original,
     Video,
 }
@@ -20,6 +22,14 @@ impl fmt::Display for AudioFormat {
             AudioFormat::Wav => write!(
                 f,
                 "WAV (.wav) - Âm thanh Lossless không nén chuẩn phòng thu"
+            ),
+            AudioFormat::Flac => write!(
+                f,
+                "FLAC (.flac) - Âm thanh Lossless nén chất lượng cao cho Audiophile"
+            ),
+            AudioFormat::Aac => write!(
+                f,
+                "AAC/M4A (.m4a) - Chuẩn nén cao cấp, tối ưu cho iPhone/Mac/Apple Music"
             ),
             AudioFormat::Original => write!(
                 f,
@@ -40,12 +50,71 @@ impl std::str::FromStr for AudioFormat {
         match s.trim().to_ascii_lowercase().as_str() {
             "mp3" => Ok(AudioFormat::Mp3),
             "wav" => Ok(AudioFormat::Wav),
+            "flac" => Ok(AudioFormat::Flac),
+            "aac" => Ok(AudioFormat::Aac),
             "original" | "m4a" | "opus" => Ok(AudioFormat::Original),
             "video" | "mp4" => Ok(AudioFormat::Video),
             other => Err(format!(
-                "Định dạng không hợp lệ: {} (chấp nhận: mp3, wav, original, video)",
+                "Định dạng không hợp lệ: {} (chấp nhận: mp3, wav, flac, aac, original, video)",
                 other
             )),
+        }
+    }
+}
+
+impl AudioFormat {
+    pub fn default_quality(self) -> AudioQuality {
+        match self {
+            AudioFormat::Mp3 => AudioQuality::Mp3_320k,
+            AudioFormat::Wav => AudioQuality::Wav_24bit_48k,
+            AudioFormat::Flac => AudioQuality::Flac_24bit_96k,
+            AudioFormat::Aac => AudioQuality::Aac_256k,
+            AudioFormat::Original | AudioFormat::Video => AudioQuality::Mp3_320k,
+        }
+    }
+
+    pub fn is_compatible_quality(self, quality: AudioQuality) -> bool {
+        match self {
+            AudioFormat::Mp3 => matches!(
+                quality,
+                AudioQuality::Mp3_320k
+                    | AudioQuality::Mp3_256k
+                    | AudioQuality::Mp3_192k
+                    | AudioQuality::Mp3_128k
+                    | AudioQuality::Mp3_96k
+                    | AudioQuality::Mp3_64k
+            ),
+            AudioFormat::Wav => matches!(
+                quality,
+                AudioQuality::Wav_24bit_48k
+                    | AudioQuality::Wav_16bit_44k
+                    | AudioQuality::Wav_16bit_22k
+                    | AudioQuality::Wav_8bit_11k
+            ),
+            AudioFormat::Flac => matches!(
+                quality,
+                AudioQuality::Flac_24bit_96k
+                    | AudioQuality::Flac_24bit_48k
+                    | AudioQuality::Flac_16bit_44k
+            ),
+            AudioFormat::Aac => matches!(
+                quality,
+                AudioQuality::Aac_320k
+                    | AudioQuality::Aac_256k
+                    | AudioQuality::Aac_192k
+                    | AudioQuality::Aac_128k
+            ),
+            AudioFormat::Original | AudioFormat::Video => false,
+        }
+    }
+
+    pub fn file_extension(self) -> &'static str {
+        match self {
+            AudioFormat::Mp3 => "mp3",
+            AudioFormat::Wav => "wav",
+            AudioFormat::Flac => "flac",
+            AudioFormat::Aac | AudioFormat::Original => "m4a",
+            AudioFormat::Video => "mp4",
         }
     }
 }
@@ -64,6 +133,15 @@ pub enum AudioQuality {
     Wav_16bit_44k,
     Wav_16bit_22k,
     Wav_8bit_11k,
+
+    Flac_24bit_96k,
+    Flac_24bit_48k,
+    Flac_16bit_44k,
+
+    Aac_320k,
+    Aac_256k,
+    Aac_192k,
+    Aac_128k,
 }
 
 impl AudioQuality {
@@ -87,13 +165,25 @@ impl AudioQuality {
         ]
     }
 
+    pub fn all_flac() -> Vec<AudioQuality> {
+        vec![
+            AudioQuality::Flac_24bit_96k,
+            AudioQuality::Flac_24bit_48k,
+            AudioQuality::Flac_16bit_44k,
+        ]
+    }
+
+    pub fn all_aac() -> Vec<AudioQuality> {
+        vec![
+            AudioQuality::Aac_320k,
+            AudioQuality::Aac_256k,
+            AudioQuality::Aac_192k,
+            AudioQuality::Aac_128k,
+        ]
+    }
+
     pub fn file_extension(&self, format: AudioFormat) -> &'static str {
-        match format {
-            AudioFormat::Mp3 => "mp3",
-            AudioFormat::Wav => "wav",
-            AudioFormat::Original => "m4a",
-            AudioFormat::Video => "mp4",
-        }
+        format.file_extension()
     }
 }
 
@@ -138,6 +228,34 @@ impl fmt::Display for AudioQuality {
                 f,
                 "8-bit PCM / 11,025 Hz  [Lo-Fi - Thấp nhất] - Dung lượng WAV nhỏ nhất"
             ),
+
+            AudioQuality::Flac_24bit_96k => write!(
+                f,
+                "24-bit / 96,000 Hz [Studio Master Lossless] - Chuẩn FLAC phòng thu cao cấp nhất"
+            ),
+            AudioQuality::Flac_24bit_48k => write!(
+                f,
+                "24-bit / 48,000 Hz [Hi-Res Lossless] - Chuẩn FLAC phòng thu cao cấp"
+            ),
+            AudioQuality::Flac_16bit_44k => write!(
+                f,
+                "16-bit / 44,100 Hz [CD Quality Lossless] - Chuẩn FLAC nguyên bản đĩa CD"
+            ),
+
+            AudioQuality::Aac_320k => {
+                write!(f, "320 kbps [Cực cao] - Chuẩn AAC chất lượng cao nhất")
+            }
+            AudioQuality::Aac_256k => write!(
+                f,
+                "256 kbps [Rất cao] - Chuẩn Apple Music / YouTube Music chất lượng cao"
+            ),
+            AudioQuality::Aac_192k => write!(
+                f,
+                "192 kbps [Chuẩn / Standard] - Chất lượng AAC tiêu chuẩn"
+            ),
+            AudioQuality::Aac_128k => {
+                write!(f, "128 kbps [Tiết kiệm] - Nhẹ, tiết kiệm dung lượng")
+            }
         }
     }
 }
@@ -153,10 +271,21 @@ impl std::str::FromStr for AudioQuality {
             "128k" => Ok(AudioQuality::Mp3_128k),
             "96k" => Ok(AudioQuality::Mp3_96k),
             "64k" => Ok(AudioQuality::Mp3_64k),
+
             "24bit48k" => Ok(AudioQuality::Wav_24bit_48k),
             "16bit44k" => Ok(AudioQuality::Wav_16bit_44k),
             "16bit22k" => Ok(AudioQuality::Wav_16bit_22k),
             "8bit11k" => Ok(AudioQuality::Wav_8bit_11k),
+
+            "24bit96k" | "flac24bit96k" | "24bit96k_flac" => Ok(AudioQuality::Flac_24bit_96k),
+            "flac24bit48k" | "24bit48k_flac" => Ok(AudioQuality::Flac_24bit_48k),
+            "flac16bit44k" | "16bit44k_flac" => Ok(AudioQuality::Flac_16bit_44k),
+
+            "aac320k" => Ok(AudioQuality::Aac_320k),
+            "aac256k" => Ok(AudioQuality::Aac_256k),
+            "aac192k" => Ok(AudioQuality::Aac_192k),
+            "aac128k" => Ok(AudioQuality::Aac_128k),
+
             other => Err(format!("Chất lượng không hợp lệ: {}", other)),
         }
     }
@@ -175,6 +304,8 @@ pub struct DownloadSettings {
     pub video_resolution: Option<u32>,
     #[serde(default = "default_concurrency")]
     pub concurrency: usize,
+    #[serde(default)]
+    pub keep_accents: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -184,6 +315,8 @@ pub struct AppConfig {
     pub last_quality: Option<AudioQuality>,
     #[serde(default = "default_video_resolution")]
     pub video_resolution: Option<u32>,
+    #[serde(default)]
+    pub keep_accents: bool,
 }
 
 fn default_video_resolution() -> Option<u32> {
@@ -201,13 +334,31 @@ impl Default for AppConfig {
             last_format: Some(AudioFormat::Mp3),
             last_quality: Some(AudioQuality::Mp3_320k),
             video_resolution: default_video_resolution(),
+            keep_accents: false,
         }
     }
 }
 
 impl AppConfig {
-    fn config_file_path() -> PathBuf {
+    fn local_config_path() -> PathBuf {
         PathBuf::from("ghita_config.json")
+    }
+
+    fn global_config_path() -> PathBuf {
+        if let Some(dir) = dirs::data_local_dir() {
+            dir.join("GhitaDownload").join("ghita_config.json")
+        } else {
+            PathBuf::from("ghita_config.json")
+        }
+    }
+
+    pub fn config_file_path() -> PathBuf {
+        let local = Self::local_config_path();
+        if local.exists() {
+            local
+        } else {
+            Self::global_config_path()
+        }
     }
 
     pub fn load() -> Self {
@@ -229,6 +380,9 @@ impl AppConfig {
 
     pub fn save(&self) {
         let path = Self::config_file_path();
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
         if let Ok(content) = serde_json::to_string_pretty(self) {
             let _ = std::fs::write(path, content);
         }
@@ -250,6 +404,11 @@ impl AppConfig {
 
     pub fn set_video_resolution(&mut self, resolution: Option<u32>) {
         self.video_resolution = resolution;
+        self.save();
+    }
+
+    pub fn set_keep_accents(&mut self, keep: bool) {
+        self.keep_accents = keep;
         self.save();
     }
 }

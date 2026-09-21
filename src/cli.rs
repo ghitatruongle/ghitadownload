@@ -9,7 +9,7 @@ use std::process::Command;
 
 use crate::core::batch::{BatchProcessor, DEFAULT_CONCURRENCY};
 use crate::core::config::{AppConfig, AudioFormat, AudioQuality, DownloadSettings};
-use crate::utils::env::{find_ffmpeg, find_ytdlp, has_node};
+use crate::utils::env::{find_ffmpeg, find_ytdlp, has_node, install_ffmpeg_auto, update_ytdlp};
 use crate::utils::file_helper::{clean_path, ensure_dir};
 use multi_input::MultiLinkInput;
 
@@ -24,7 +24,7 @@ pub struct EnvTools {
 pub struct CliApp;
 
 impl CliApp {
-    pub fn prepare_env() -> Option<EnvTools> {
+    pub async fn prepare_env() -> Option<EnvTools> {
         let ytdlp_path = match find_ytdlp() {
             Some(p) => p,
             None => {
@@ -41,9 +41,40 @@ impl CliApp {
             None => {
                 println!(
                     "{}",
-                    "❌ Không tìm thấy FFmpeg! Vui lòng đảm bảo FFmpeg đã có trong biến môi trường PATH.".red().bold()
+                    "⚠ Không tìm thấy FFmpeg (công cụ chuyển mã & gắn thẻ âm thanh)!".yellow().bold()
                 );
-                return None;
+                let auto_install = Confirm::new("Bạn có muốn Ghita Downloader tự động cài đặt FFmpeg về máy không?")
+                    .with_default(true)
+                    .with_help_message("Chỉ cần thực hiện 1 lần, app sẽ tự động tải FFmpeg và cấu hình cho bạn")
+                    .prompt()
+                    .unwrap_or(false);
+
+                if auto_install {
+                    println!(
+                        "{}",
+                        "⏳ Đang tự động tải và thiết lập FFmpeg... (vui lòng đợi trong giây lát)".cyan()
+                    );
+                    match install_ffmpeg_auto() {
+                        Ok(p) => {
+                            println!(
+                                "{} {}\n",
+                                "✔ Cài đặt FFmpeg thành công:".green().bold(),
+                                p.display().to_string().cyan()
+                            );
+                            p
+                        }
+                        Err(e) => {
+                            println!("{} {}", "❌ Không thể tự động cài đặt FFmpeg:".red().bold(), e);
+                            return None;
+                        }
+                    }
+                } else {
+                    println!(
+                        "{}",
+                        "❌ Vui lòng cài đặt FFmpeg thủ công (chạy lệnh: winget install Gyan.FFmpeg) để tiếp tục.".red()
+                    );
+                    return None;
+                }
             }
         };
 
@@ -57,7 +88,7 @@ impl CliApp {
     pub async fn run() -> Result<()> {
         Self::print_banner();
 
-        let env = match Self::prepare_env() {
+        let env = match Self::prepare_env().await {
             Some(e) => e,
             None => return Ok(()),
         };
@@ -78,12 +109,14 @@ impl CliApp {
                 active_format,
                 active_quality,
                 active_resolution,
+                config.keep_accents,
             );
 
             let menu_choices = vec![
                 "🚀 Bắt đầu nhập liên kết & Tải ngay (Dùng cài đặt hiện tại)",
-                "⚙ Thay đổi cài đặt (Thư mục, Định dạng MP3/WAV/Gốc/Video, Chất lượng)",
+                "⚙ Thay đổi cài đặt (Thư mục, Định dạng MP3/WAV/FLAC/AAC/Gốc/Video, Tiếng Việt)",
                 "🔁 Thử lại các bài lỗi gần nhất (failed_tasks.json)",
+                "🔄 Cập nhật công cụ yt-dlp (Lấy bản mới nhất từ GitHub)",
                 "📂 Mở thư mục lưu nhạc trong File Explorer",
                 "❌ Thoát ứng dụng",
             ];
@@ -126,6 +159,7 @@ impl CliApp {
                     quality: quality_opt,
                     video_resolution: active_resolution,
                     concurrency: DEFAULT_CONCURRENCY,
+                    keep_accents: config.keep_accents,
                 };
 
                 let batch_processor =
@@ -180,6 +214,8 @@ impl CliApp {
                 let format_options = vec![
                     AudioFormat::Mp3,
                     AudioFormat::Wav,
+                    AudioFormat::Flac,
+                    AudioFormat::Aac,
                     AudioFormat::Original,
                     AudioFormat::Video,
                 ];
@@ -189,10 +225,13 @@ impl CliApp {
                 active_format = new_format;
 
                 match new_format {
-                    AudioFormat::Mp3 | AudioFormat::Wav => {
+                    AudioFormat::Mp3 | AudioFormat::Wav | AudioFormat::Flac | AudioFormat::Aac => {
                         let quality_options = match new_format {
                             AudioFormat::Mp3 => AudioQuality::all_mp3(),
-                            _ => AudioQuality::all_wav(),
+                            AudioFormat::Wav => AudioQuality::all_wav(),
+                            AudioFormat::Flac => AudioQuality::all_flac(),
+                            AudioFormat::Aac => AudioQuality::all_aac(),
+                            _ => AudioQuality::all_mp3(),
                         };
                         let new_quality =
                             Select::new("🎚 Chọn mức chất lượng âm thanh:", quality_options)
@@ -222,6 +261,17 @@ impl CliApp {
                     }
                 }
 
+                let accent_options = vec![
+                    "Khử dấu an toàn (Khuyên dùng cho USB, ô tô, loa cũ, máy nghe nhạc)",
+                    "Giữ nguyên dấu tiếng Việt Unicode (Đẹp trên Windows, điện thoại)",
+                ];
+                let default_accent_cursor = if config.keep_accents { 1 } else { 0 };
+                let accent_choice = Select::new("🔤 Kiểu đặt tên tệp tiếng Việt:", accent_options)
+                    .with_starting_cursor(default_accent_cursor)
+                    .prompt()?;
+                let keep_accents = accent_choice.starts_with("Giữ");
+                config.set_keep_accents(keep_accents);
+
                 println!(
                     "\n{} Đã cập nhật và áp dụng cài đặt thành công!\n",
                     "✔".green().bold()
@@ -245,6 +295,19 @@ impl CliApp {
                     }
                     Err(e) => {
                         println!("{}", format!("⚠ {}", e).yellow());
+                    }
+                }
+            } else if choice.starts_with("🔄") {
+                println!(
+                    "\n{}",
+                    "⏳ Đang kết nối GitHub và kiểm tra cập nhật yt-dlp...".cyan()
+                );
+                match update_ytdlp(&ytdlp_path) {
+                    Ok(msg) => {
+                        println!("\n{} {}\n", "✔".green().bold(), msg.green().bold());
+                    }
+                    Err(e) => {
+                        println!("\n{} {}\n", "❌ Lỗi cập nhật:".red().bold(), e);
                     }
                 }
             } else if choice.starts_with("📂") {
@@ -290,6 +353,7 @@ impl CliApp {
         format: AudioFormat,
         quality: AudioQuality,
         resolution: Option<u32>,
+        keep_accents: bool,
     ) {
         let ext = quality.file_extension(format);
         let quality_label = match format {
@@ -315,6 +379,12 @@ impl CliApp {
             raw_dir
         };
 
+        let accent_label = if keep_accents {
+            "Có dấu (Unicode)".to_string()
+        } else {
+            "Khử dấu an toàn".to_string()
+        };
+
         println!(
             "{}",
             "┌─────────────────────────────────────────────────────────────┐".cyan()
@@ -338,6 +408,7 @@ impl CliApp {
             format!("{:?} (.{})", format, ext).green().bold()
         );
         println!("│ 🎚 Chất lượng:   {:<43} │", quality_label.cyan());
+        println!("│ 🔤 Tên tệp:      {:<43} │", accent_label.bright_white());
         println!(
             "{}",
             "└─────────────────────────────────────────────────────────────┘".cyan()
@@ -365,7 +436,7 @@ impl CliApp {
         );
         println!(
             "{}",
-            "║   TikTok, FB, Threads | MP3/WAV/Gốc/Video | Tải song song    ║".bright_white()
+            "║  TikTok, FB, Threads | MP3/WAV/FLAC/AAC/Video | Tải song song ║".bright_white()
         );
         println!(
             "{}",

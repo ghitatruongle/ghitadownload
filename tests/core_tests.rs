@@ -67,6 +67,17 @@ fn test_vietnamese_accent_removal() {
 }
 
 #[test]
+fn test_vietnamese_accent_keep_option() {
+    use ghita_download::utils::file_helper::sanitize_name_with_options;
+    let vn_name = "Cháu Lên Ba - Bích Phương (Đêm Sắc Hương Bình) [Official]";
+    let clean = sanitize_name_with_options(vn_name, true);
+    assert_eq!(
+        clean,
+        "Cháu Lên Ba - Bích Phương (Đêm Sắc Hương Bình) [Official]"
+    );
+}
+
+#[test]
 fn test_audio_qualities_extensions() {
     assert_eq!(
         AudioQuality::Mp3_320k.file_extension(AudioFormat::Mp3),
@@ -87,6 +98,16 @@ fn test_audio_qualities_extensions() {
 
     assert_eq!(AudioQuality::all_mp3().len(), 6);
     assert_eq!(AudioQuality::all_wav().len(), 4);
+    assert_eq!(
+        AudioQuality::Flac_24bit_48k.file_extension(AudioFormat::Flac),
+        "flac"
+    );
+    assert_eq!(
+        AudioQuality::Aac_256k.file_extension(AudioFormat::Aac),
+        "m4a"
+    );
+    assert_eq!(AudioQuality::all_flac().len(), 3);
+    assert_eq!(AudioQuality::all_aac().len(), 4);
 }
 
 #[tokio::test]
@@ -289,7 +310,9 @@ fn test_audio_format_from_str() {
     );
     assert_eq!("video".parse::<AudioFormat>().unwrap(), AudioFormat::Video);
     assert_eq!("mp4".parse::<AudioFormat>().unwrap(), AudioFormat::Video);
-    assert!("flac".parse::<AudioFormat>().is_err());
+    assert_eq!("flac".parse::<AudioFormat>().unwrap(), AudioFormat::Flac);
+    assert_eq!("aac".parse::<AudioFormat>().unwrap(), AudioFormat::Aac);
+    assert!("xyz".parse::<AudioFormat>().is_err());
     assert!("".parse::<AudioFormat>().is_err());
 }
 
@@ -335,6 +358,14 @@ fn test_audio_quality_from_str() {
         "8bit11k".parse::<AudioQuality>().unwrap(),
         AudioQuality::Wav_8bit_11k
     );
+    assert_eq!(
+        "24bit96k".parse::<AudioQuality>().unwrap(),
+        AudioQuality::Flac_24bit_96k
+    );
+    assert_eq!(
+        "flac24bit96k".parse::<AudioQuality>().unwrap(),
+        AudioQuality::Flac_24bit_96k
+    );
     assert!("320kbps".parse::<AudioQuality>().is_err());
     assert!("999k".parse::<AudioQuality>().is_err());
 }
@@ -361,6 +392,7 @@ fn test_failed_queue_serde_roundtrip_and_retry() {
         quality: Some(AudioQuality::Mp3_320k),
         video_resolution: None,
         concurrency: 3,
+        keep_accents: false,
     };
 
     let task = DownloadTask {
@@ -374,6 +406,8 @@ fn test_failed_queue_serde_roundtrip_and_retry() {
             album: "Test Album".to_string(),
             release_year: Some(2026),
             cover_url: None,
+            track_number: None,
+            total_tracks: None,
         },
     };
 
@@ -449,6 +483,7 @@ fn test_download_settings_legacy_json_defaults() {
     assert_eq!(settings.quality, Some(AudioQuality::Mp3_320k));
     assert_eq!(settings.video_resolution, None);
     assert_eq!(settings.concurrency, 3);
+    assert!(!settings.keep_accents);
 }
 
 #[test]
@@ -458,6 +493,7 @@ fn test_app_config_legacy_json_loads() {
     let cfg: AppConfig = serde_json::from_str(legacy).unwrap();
     assert_eq!(cfg.last_format, Some(AudioFormat::Wav));
     assert_eq!(cfg.video_resolution, Some(1080));
+    assert!(!cfg.keep_accents);
 }
 
 #[test]
@@ -478,4 +514,37 @@ fn test_audio_quality_file_extension_new_formats() {
         AudioQuality::Wav_24bit_48k.file_extension(AudioFormat::Video),
         "mp4"
     );
+    assert_eq!(AudioFormat::Mp3.file_extension(), "mp3");
+    assert_eq!(AudioFormat::Flac.file_extension(), "flac");
+    assert_eq!(AudioFormat::Aac.file_extension(), "m4a");
+    assert_eq!(AudioFormat::Wav.file_extension(), "wav");
+    assert_eq!(AudioFormat::Original.file_extension(), "m4a");
+    assert_eq!(AudioFormat::Video.file_extension(), "mp4");
+}
+
+#[test]
+fn test_audio_format_default_and_compatible_quality() {
+    assert_eq!(
+        AudioFormat::Mp3.default_quality(),
+        AudioQuality::Mp3_320k
+    );
+    assert_eq!(
+        AudioFormat::Wav.default_quality(),
+        AudioQuality::Wav_24bit_48k
+    );
+    assert_eq!(
+        AudioFormat::Flac.default_quality(),
+        AudioQuality::Flac_24bit_96k
+    );
+    assert_eq!(
+        AudioFormat::Aac.default_quality(),
+        AudioQuality::Aac_256k
+    );
+
+    assert!(AudioFormat::Mp3.is_compatible_quality(AudioQuality::Mp3_128k));
+    assert!(!AudioFormat::Mp3.is_compatible_quality(AudioQuality::Wav_24bit_48k));
+    assert!(AudioFormat::Flac.is_compatible_quality(AudioQuality::Flac_24bit_96k));
+    assert!(!AudioFormat::Flac.is_compatible_quality(AudioQuality::Aac_320k));
+    assert!(AudioFormat::Aac.is_compatible_quality(AudioQuality::Aac_320k));
+    assert!(!AudioFormat::Aac.is_compatible_quality(AudioQuality::Mp3_320k));
 }

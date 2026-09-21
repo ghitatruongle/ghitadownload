@@ -13,6 +13,8 @@ pub struct SpotifyTrackMeta {
     pub duration_ms: Option<u64>,
     pub cover_url: Option<String>,
     pub search_query: String,
+    pub track_number: Option<u32>,
+    pub total_tracks: Option<u32>,
 }
 
 pub struct SpotifyClient {
@@ -100,6 +102,8 @@ impl SpotifyClient {
                 duration_ms,
                 cover_url,
                 search_query,
+                track_number: None,
+                total_tracks: None,
             });
         }
 
@@ -137,6 +141,8 @@ impl SpotifyClient {
                     duration_ms: None,
                     cover_url,
                     search_query,
+                    track_number: None,
+                    total_tracks: None,
                 });
             }
         }
@@ -174,7 +180,8 @@ impl SpotifyClient {
 
         let mut tracks = Vec::new();
         if let Some(track_list) = entity["trackList"].as_array() {
-            for item in track_list {
+            let total = track_list.len() as u32;
+            for (idx, item) in track_list.iter().enumerate() {
                 let title = item["title"]
                     .as_str()
                     .unwrap_or("Unknown Title")
@@ -194,6 +201,8 @@ impl SpotifyClient {
                     duration_ms,
                     cover_url: cover_url.clone(),
                     search_query,
+                    track_number: Some((idx + 1) as u32),
+                    total_tracks: Some(total),
                 });
             }
         }
@@ -230,7 +239,8 @@ impl SpotifyClient {
 
         let mut tracks = Vec::new();
         if let Some(track_list) = entity["trackList"].as_array() {
-            for item in track_list {
+            let total = track_list.len() as u32;
+            for (idx, item) in track_list.iter().enumerate() {
                 let title = item["title"].as_str().unwrap_or("Unknown").to_string();
                 let subtitle = item["subtitle"].as_str().unwrap_or("Unknown").to_string();
                 let duration_ms = item["duration"].as_u64();
@@ -244,6 +254,8 @@ impl SpotifyClient {
                     duration_ms,
                     cover_url: cover_url.clone(),
                     search_query,
+                    track_number: Some((idx + 1) as u32),
+                    total_tracks: Some(total),
                 });
             }
         }
@@ -273,6 +285,8 @@ impl SpotifyClient {
             duration_ms: None,
             cover_url,
             search_query,
+            track_number: None,
+            total_tracks: None,
         })
     }
 }

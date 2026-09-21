@@ -7,9 +7,9 @@ use std::sync::Arc;
 use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 
-use crate::utils::file_helper::{ensure_dir, ensure_unique_path, sanitize_name};
+use crate::utils::file_helper::{ensure_dir, sanitize_name};
 
-use super::config::{AudioFormat, AudioQuality, DownloadSettings};
+use super::config::{AudioFormat, DownloadSettings};
 use super::downloader::{DownloadMode, StreamDownloader};
 use super::platform::{PlatformParser, UrlType};
 use super::spotify::{SpotifyClient, SpotifyTrackMeta};
@@ -143,7 +143,9 @@ impl BatchProcessor {
                             "✔".green().bold(),
                             items.len()
                         );
-                        for item in items {
+                        let total_items = items.len() as u32;
+                        for (idx, item) in items.into_iter().enumerate() {
+                            let track_num = (idx + 1) as u32;
                             tasks.push(DownloadTask {
                                 display_title: format!("{} - {}", item.uploader, item.title),
                                 source_or_search: item.direct_url,
@@ -158,6 +160,8 @@ impl BatchProcessor {
                                     album: "YouTube Music".to_string(),
                                     release_year: None,
                                     cover_url: item.thumbnail_url,
+                                    track_number: Some(track_num),
+                                    total_tracks: Some(total_items),
                                 },
                             });
                         }
@@ -184,6 +188,8 @@ impl BatchProcessor {
                                 album: "YouTube".to_string(),
                                 release_year: None,
                                 cover_url: item.thumbnail_url,
+                                track_number: None,
+                                total_tracks: None,
                             },
                         });
                     } else {
@@ -198,6 +204,8 @@ impl BatchProcessor {
                                 album: "YouTube".to_string(),
                                 release_year: None,
                                 cover_url: None,
+                                track_number: None,
+                                total_tracks: None,
                             },
                         });
                     }
@@ -238,6 +246,8 @@ impl BatchProcessor {
                             album: "Suno AI Music".to_string(),
                             release_year: None,
                             cover_url: meta.cover_url,
+                            track_number: None,
+                            total_tracks: None,
                         },
                     });
                 }
@@ -258,6 +268,8 @@ impl BatchProcessor {
                                 album: platform_name.clone(),
                                 release_year: None,
                                 cover_url: item.thumbnail_url,
+                                track_number: None,
+                                total_tracks: None,
                             },
                         });
                     } else {
@@ -276,6 +288,8 @@ impl BatchProcessor {
                                 album: platform_name.clone(),
                                 release_year: None,
                                 cover_url: None,
+                                track_number: None,
+                                total_tracks: None,
                             },
                         });
                     }
@@ -296,6 +310,8 @@ impl BatchProcessor {
                             album: "Search".to_string(),
                             release_year: None,
                             cover_url: None,
+                            track_number: None,
+                            total_tracks: None,
                         },
                     });
                 }
@@ -313,7 +329,8 @@ impl BatchProcessor {
         let search_target = format!("ytsearch1:{}", meta.search_query);
 
         let fallback_searches = vec![
-            format!("ytsearch1:{} {} audio", primary_artist, meta.title),
+            format!("ytsearch1:{} {} Topic", primary_artist, meta.title),
+            format!("ytsearch1:{} {} official audio", primary_artist, meta.title),
             format!("ytsearch1:{} - {}", primary_artist, meta.title),
             format!("ytsearch1:{} {}", primary_artist, meta.title),
             format!("ytsearch3:{} {}", primary_artist, meta.title),
@@ -332,6 +349,8 @@ impl BatchProcessor {
                 album: meta.album,
                 release_year: meta.release_year,
                 cover_url: meta.cover_url,
+                track_number: meta.track_number,
+                total_tracks: meta.total_tracks,
             },
         }
     }
@@ -518,6 +537,8 @@ impl BatchProcessor {
                 let ext = match fmt {
                     AudioFormat::Mp3 => "mp3".to_string(),
                     AudioFormat::Wav => "wav".to_string(),
+                    AudioFormat::Flac => "flac".to_string(),
+                    AudioFormat::Aac => "m4a".to_string(),
                     AudioFormat::Video => "mp4".to_string(),
                     AudioFormat::Original => temp_file
                         .extension()
@@ -525,7 +546,21 @@ impl BatchProcessor {
                         .map(|s| s.to_ascii_lowercase())
                         .unwrap_or_else(|| "m4a".to_string()),
                 };
-                let final_path = ensure_unique_path(&out_dir, &task.display_title, &ext);
+                let formatted_title = if let Some(num) = task.metadata.track_number {
+                    if task.metadata.total_tracks.unwrap_or(0) > 1 {
+                        format!("{:02}. {}", num, task.display_title)
+                    } else {
+                        task.display_title.clone()
+                    }
+                } else {
+                    task.display_title.clone()
+                };
+                let final_path = crate::utils::file_helper::ensure_unique_path_with_options(
+                    &out_dir,
+                    &formatted_title,
+                    &ext,
+                    settings.keep_accents,
+                );
 
                 handle.set_message(format!(
                     "[{}/{}] hoàn thiện • {}",
@@ -540,8 +575,14 @@ impl BatchProcessor {
                 let meta = task.metadata.clone();
                 let q = settings.quality;
                 let tr_res = tokio::task::spawn_blocking(move || match fmt {
-                    AudioFormat::Mp3 | AudioFormat::Wav => {
-                        tr.transcode(&src, &dst, fmt, q.unwrap_or(AudioQuality::Mp3_320k), &meta)
+                    AudioFormat::Mp3 | AudioFormat::Wav | AudioFormat::Flac | AudioFormat::Aac => {
+                        tr.transcode(
+                            &src,
+                            &dst,
+                            fmt,
+                            q.unwrap_or_else(|| fmt.default_quality()),
+                            &meta,
+                        )
                     }
                     _ => tr.remux_copy(&src, &dst, &meta),
                 })

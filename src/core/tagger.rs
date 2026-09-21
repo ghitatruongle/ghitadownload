@@ -12,6 +12,10 @@ pub struct AudioMetadata {
     pub album: String,
     pub release_year: Option<u32>,
     pub cover_url: Option<String>,
+    #[serde(default)]
+    pub track_number: Option<u32>,
+    #[serde(default)]
+    pub total_tracks: Option<u32>,
 }
 
 pub struct Tagger {
@@ -44,6 +48,14 @@ impl Tagger {
 
         if let Some(year) = meta.release_year {
             tag.set_year(year as i32);
+        }
+
+        if let Some(track) = meta.track_number {
+            tag.set_track(track);
+        }
+
+        if let Some(total) = meta.total_tracks {
+            tag.set_total_tracks(total);
         }
 
         if let Some(ref raw_cover_url) = meta.cover_url {

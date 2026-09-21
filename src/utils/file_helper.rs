@@ -49,9 +49,17 @@ pub fn remove_vietnamese_accents(input: &str) -> String {
 }
 
 pub fn sanitize_name(name: &str) -> String {
-    let unaccented = remove_vietnamese_accents(name);
+    sanitize_name_with_options(name, false)
+}
+
+pub fn sanitize_name_with_options(name: &str, keep_accents: bool) -> String {
+    let processed = if keep_accents {
+        name.to_string()
+    } else {
+        remove_vietnamese_accents(name)
+    };
     let sanitized = sanitize_filename::sanitize_with_options(
-        &unaccented,
+        &processed,
         sanitize_filename::Options {
             truncate: true,
             windows: true,
@@ -73,9 +81,20 @@ pub fn clean_path(path: &Path) -> PathBuf {
     PathBuf::from(cleaned)
 }
 
+#[allow(dead_code)]
 pub fn ensure_unique_path(dir: &Path, base_name: &str, ext: &str) -> PathBuf {
+    ensure_unique_path_with_options(dir, base_name, ext, false)
+}
+
+pub fn ensure_unique_path_with_options(
+    dir: &Path,
+    base_name: &str,
+    ext: &str,
+    keep_accents: bool,
+) -> PathBuf {
     let clean_dir = clean_path(dir);
-    let clean_base = sanitize_name(base_name);
+    let _ = std::fs::create_dir_all(&clean_dir);
+    let clean_base = sanitize_name_with_options(base_name, keep_accents);
     let mut candidate = clean_dir.join(format!("{}.{}", clean_base, ext));
     let mut counter = 1u32;
 
@@ -86,8 +105,8 @@ pub fn ensure_unique_path(dir: &Path, base_name: &str, ext: &str) -> PathBuf {
             .open(&candidate)
         {
             Ok(_) => return candidate,
-            Err(_) => {
-                if counter >= 100_000 {
+            Err(e) => {
+                if counter >= 10_000 || e.kind() == std::io::ErrorKind::PermissionDenied {
                     return candidate;
                 }
                 candidate = clean_dir.join(format!("{} ({}).{}", clean_base, counter, ext));
