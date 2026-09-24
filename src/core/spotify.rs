@@ -2,6 +2,57 @@ use anyhow::{anyhow, Result};
 use regex::Regex;
 use reqwest::Client;
 use serde_json::Value;
+use url::Url;
+
+fn artists_from_subtitle(subtitle: &str) -> Vec<String> {
+    let artist = subtitle
+        .split(" • ")
+        .next()
+        .unwrap_or(subtitle)
+        .split(" · ")
+        .next()
+        .unwrap_or(subtitle)
+        .trim();
+
+    if artist.is_empty() {
+        vec!["Unknown Artist".to_string()]
+    } else {
+        vec![artist.to_string()]
+    }
+}
+
+fn required_text(value: &Value, field: &str, context: &str) -> Result<String> {
+    value[field]
+        .as_str()
+        .filter(|value| !value.trim().is_empty())
+        .map(str::to_string)
+        .ok_or_else(|| anyhow!("Thiếu trường {} trong {}", field, context))
+}
+
+fn track_meta_from_item(
+    item: &Value,
+    album: &str,
+    cover_url: Option<String>,
+    track_number: Option<u32>,
+    total_tracks: Option<u32>,
+) -> Result<SpotifyTrackMeta> {
+    let title = required_text(item, "title", "track Spotify")?;
+    let subtitle = required_text(item, "subtitle", "track Spotify")?;
+    let artists = artists_from_subtitle(&subtitle);
+    let search_query = format!("{} {} official audio", artists[0], title);
+
+    Ok(SpotifyTrackMeta {
+        title,
+        artists,
+        album: album.to_string(),
+        release_year: None,
+        duration_ms: item["duration"].as_u64(),
+        cover_url,
+        search_query,
+        track_number,
+        total_tracks,
+    })
+}
 
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
@@ -40,7 +91,14 @@ impl SpotifyClient {
 
     pub async fn fetch_track(&self, track_id: &str) -> Result<SpotifyTrackMeta> {
         let embed_url = format!("https://open.spotify.com/embed/track/{}", track_id);
-        let resp = self.client.get(&embed_url).send().await?.text().await?;
+        let resp = self
+            .client
+            .get(&embed_url)
+            .send()
+            .await?
+            .error_for_status()?
+            .text()
+            .await?;
 
         let re =
             Regex::new(r#"<script id="__NEXT_DATA__" type="application/json">([^<]+)</script>"#)?;
@@ -52,7 +110,8 @@ impl SpotifyClient {
             let title = entity["name"]
                 .as_str()
                 .or_else(|| entity["title"].as_str())
-                .unwrap_or("Unknown Title")
+                .filter(|value| !value.trim().is_empty())
+                .ok_or_else(|| anyhow!("Thiếu tiêu đề track Spotify"))?
                 .to_string();
 
             let mut artists = Vec::new();
@@ -65,7 +124,7 @@ impl SpotifyClient {
             }
             if artists.is_empty() {
                 if let Some(subtitle) = entity["subtitle"].as_str() {
-                    artists.push(subtitle.to_string());
+                    artists = artists_from_subtitle(subtitle);
                 }
             }
             if artists.is_empty() {
@@ -156,7 +215,14 @@ impl SpotifyClient {
         album_id: &str,
     ) -> Result<(String, Vec<SpotifyTrackMeta>)> {
         let embed_url = format!("https://open.spotify.com/embed/album/{}", album_id);
-        let resp = self.client.get(&embed_url).send().await?.text().await?;
+        let resp = self
+            .client
+            .get(&embed_url)
+            .send()
+            .await?
+            .error_for_status()?
+            .text()
+            .await?;
 
         let re =
             Regex::new(r#"<script id="__NEXT_DATA__" type="application/json">([^<]+)</script>"#)?;
@@ -178,33 +244,20 @@ impl SpotifyClient {
             }
         }
 
-        let mut tracks = Vec::new();
-        if let Some(track_list) = entity["trackList"].as_array() {
-            let total = track_list.len() as u32;
-            for (idx, item) in track_list.iter().enumerate() {
-                let title = item["title"]
-                    .as_str()
-                    .unwrap_or("Unknown Title")
-                    .to_string();
-                let subtitle = item["subtitle"]
-                    .as_str()
-                    .unwrap_or("Unknown Artist")
-                    .to_string();
-                let duration_ms = item["duration"].as_u64();
-                let search_query = format!("{} {} official audio", subtitle, title);
-
-                tracks.push(SpotifyTrackMeta {
-                    title,
-                    artists: vec![subtitle],
-                    album: album_name.clone(),
-                    release_year: None,
-                    duration_ms,
-                    cover_url: cover_url.clone(),
-                    search_query,
-                    track_number: Some((idx + 1) as u32),
-                    total_tracks: Some(total),
-                });
-            }
+        let track_list = entity["trackList"]
+            .as_array()
+            .filter(|tracks| !tracks.is_empty())
+            .ok_or_else(|| anyhow!("Album Spotify không có danh sách track"))?;
+        let total = track_list.len() as u32;
+        let mut tracks = Vec::with_capacity(track_list.len());
+        for (idx, item) in track_list.iter().enumerate() {
+            tracks.push(track_meta_from_item(
+                item,
+                &album_name,
+                cover_url.clone(),
+                Some((idx + 1) as u32),
+                Some(total),
+            )?);
         }
 
         Ok((album_name, tracks))
@@ -215,7 +268,14 @@ impl SpotifyClient {
         playlist_id: &str,
     ) -> Result<(String, Vec<SpotifyTrackMeta>)> {
         let embed_url = format!("https://open.spotify.com/embed/playlist/{}", playlist_id);
-        let resp = self.client.get(&embed_url).send().await?.text().await?;
+        let resp = self
+            .client
+            .get(&embed_url)
+            .send()
+            .await?
+            .error_for_status()?
+            .text()
+            .await?;
 
         let re =
             Regex::new(r#"<script id="__NEXT_DATA__" type="application/json">([^<]+)</script>"#)?;
@@ -237,50 +297,53 @@ impl SpotifyClient {
             }
         }
 
-        let mut tracks = Vec::new();
-        if let Some(track_list) = entity["trackList"].as_array() {
-            let total = track_list.len() as u32;
-            for (idx, item) in track_list.iter().enumerate() {
-                let title = item["title"].as_str().unwrap_or("Unknown").to_string();
-                let subtitle = item["subtitle"].as_str().unwrap_or("Unknown").to_string();
-                let duration_ms = item["duration"].as_u64();
-                let search_query = format!("{} {} official audio", subtitle, title);
-
-                tracks.push(SpotifyTrackMeta {
-                    title,
-                    artists: vec![subtitle],
-                    album: playlist_name.clone(),
-                    release_year: None,
-                    duration_ms,
-                    cover_url: cover_url.clone(),
-                    search_query,
-                    track_number: Some((idx + 1) as u32),
-                    total_tracks: Some(total),
-                });
-            }
+        let track_list = entity["trackList"]
+            .as_array()
+            .filter(|tracks| !tracks.is_empty())
+            .ok_or_else(|| anyhow!("Playlist Spotify không có danh sách track"))?;
+        let total = track_list.len() as u32;
+        let mut tracks = Vec::with_capacity(track_list.len());
+        for (idx, item) in track_list.iter().enumerate() {
+            tracks.push(track_meta_from_item(
+                item,
+                &playlist_name,
+                cover_url.clone(),
+                Some((idx + 1) as u32),
+                Some(total),
+            )?);
         }
 
         Ok((playlist_name, tracks))
     }
 
     async fn fetch_via_oembed(&self, url: &str) -> Result<SpotifyTrackMeta> {
-        let endpoint = format!("https://open.spotify.com/oembed?url={}", url);
-        let v: Value = self.client.get(&endpoint).send().await?.json().await?;
+        let mut endpoint = Url::parse("https://open.spotify.com/oembed")?;
+        endpoint.query_pairs_mut().append_pair("url", url);
+        let v: Value = self
+            .client
+            .get(endpoint)
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
 
-        let title = v["title"].as_str().unwrap_or("Unknown Title").to_string();
+        let title = required_text(&v, "title", "oEmbed Spotify")?;
         let artist = v["author_name"]
             .as_str()
-            .filter(|s| !s.is_empty())
-            .unwrap_or("Spotify Artist")
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| anyhow!("Thiếu tác giả trong oEmbed Spotify"))?
             .to_string();
-
-        let cover_url = v["thumbnail_url"].as_str().map(|s| s.to_string());
+        let cover_url = v["thumbnail_url"]
+            .as_str()
+            .filter(|value| !value.trim().is_empty())
+            .map(str::to_string);
         let search_query = format!("{} {} official audio", artist, title);
 
         Ok(SpotifyTrackMeta {
             title: title.clone(),
             artists: vec![artist],
-            album: title.clone(),
+            album: title,
             release_year: None,
             duration_ms: None,
             cover_url,

@@ -249,10 +249,9 @@ impl fmt::Display for AudioQuality {
                 f,
                 "256 kbps [Rất cao] - Chuẩn Apple Music / YouTube Music chất lượng cao"
             ),
-            AudioQuality::Aac_192k => write!(
-                f,
-                "192 kbps [Chuẩn / Standard] - Chất lượng AAC tiêu chuẩn"
-            ),
+            AudioQuality::Aac_192k => {
+                write!(f, "192 kbps [Chuẩn / Standard] - Chất lượng AAC tiêu chuẩn")
+            }
             AudioQuality::Aac_128k => {
                 write!(f, "128 kbps [Tiết kiệm] - Nhẹ, tiết kiệm dung lượng")
             }
@@ -339,6 +338,34 @@ impl Default for AppConfig {
     }
 }
 
+fn replace_config_file(source: &Path, destination: &Path) -> std::io::Result<()> {
+    match std::fs::rename(source, destination) {
+        Ok(()) => Ok(()),
+        Err(_) if destination.exists() => {
+            let backup = destination.with_extension(format!(
+                "json.{}.{}.bak",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_nanos()
+            ));
+            std::fs::rename(destination, &backup)?;
+            match std::fs::rename(source, destination) {
+                Ok(()) => {
+                    let _ = std::fs::remove_file(backup);
+                    Ok(())
+                }
+                Err(error) => {
+                    let _ = std::fs::rename(&backup, destination);
+                    Err(error)
+                }
+            }
+        }
+        Err(error) => Err(error),
+    }
+}
+
 impl AppConfig {
     fn local_config_path() -> PathBuf {
         PathBuf::from("ghita_config.json")
@@ -361,30 +388,132 @@ impl AppConfig {
         }
     }
 
-    pub fn load() -> Self {
-        let path = Self::config_file_path();
-        if path.exists() {
-            if let Ok(content) = std::fs::read_to_string(&path) {
-                if let Ok(mut cfg) = serde_json::from_str::<AppConfig>(&content) {
-                    if let Some(ref dir) = cfg.last_output_dir {
-                        let s = dir.to_string_lossy();
-                        let cleaned = s.trim().trim_matches(|c| c == '"' || c == '\'').trim();
-                        cfg.last_output_dir = Some(PathBuf::from(cleaned));
-                    }
-                    return cfg;
-                }
-            }
-        }
-        Self::default()
+    pub fn system_music_dir() -> PathBuf {
+        dirs::audio_dir()
+            .or_else(dirs::download_dir)
+            .unwrap_or_else(|| PathBuf::from("./downloads"))
     }
 
-    pub fn save(&self) {
-        let path = Self::config_file_path();
-        if let Some(parent) = path.parent() {
-            let _ = std::fs::create_dir_all(parent);
+    pub fn is_sensible_user_dir(path: &Path) -> bool {
+        let path_str = path.to_string_lossy();
+        let trimmed = path_str
+            .trim()
+            .trim_matches(|c| c == '"' || c == '\'')
+            .trim();
+        if trimmed.is_empty() || trimmed == "." {
+            return false;
         }
-        if let Ok(content) = serde_json::to_string_pretty(self) {
-            let _ = std::fs::write(path, content);
+        let lower = trimmed.to_ascii_lowercase();
+        if lower == r"c:\"
+            || lower == "/"
+            || lower == r"c:\windows"
+            || lower.starts_with(r"c:\windows\system32")
+            || lower.starts_with(r"c:\windows\syswow64")
+        {
+            return false;
+        }
+        if lower.contains(r"appdata\local\ghitadownload") {
+            return false;
+        }
+        true
+    }
+
+    pub fn initial_output_dir(&self, current_dir: PathBuf) -> PathBuf {
+        if Self::is_sensible_user_dir(&current_dir) {
+            current_dir
+        } else {
+            self.last_output_dir
+                .clone()
+                .filter(|path| Self::is_sensible_user_dir(path))
+                .unwrap_or_else(Self::system_music_dir)
+        }
+    }
+
+    pub fn try_load() -> Result<Self, String> {
+        Self::try_load_from(&Self::config_file_path())
+    }
+
+    pub fn try_load_from(path: &Path) -> Result<Self, String> {
+        if !path.exists() {
+            return Ok(Self::default());
+        }
+        let content = std::fs::read_to_string(path)
+            .map_err(|error| format!("Không đọc được cấu hình {}: {error}", path.display()))?;
+        let mut config = serde_json::from_str::<AppConfig>(&content)
+            .map_err(|error| format!("Cấu hình {} không hợp lệ: {error}", path.display()))?;
+        if let Some(ref dir) = config.last_output_dir {
+            let value = dir.to_string_lossy();
+            let cleaned = value.trim().trim_matches(|c| c == '"' || c == '\'').trim();
+            config.last_output_dir = Some(PathBuf::from(cleaned));
+        }
+        Ok(config)
+    }
+
+    #[allow(dead_code)]
+    pub fn load() -> Self {
+        match Self::try_load() {
+            Ok(config) => config,
+            Err(message) => {
+                eprintln!("Cảnh báo: {message}. Đang dùng cấu hình mặc định.");
+                Self::default()
+            }
+        }
+    }
+
+    pub fn try_save(&self) -> Result<(), String> {
+        self.try_save_to(&Self::config_file_path())
+    }
+
+    pub fn try_save_to(&self, path: &Path) -> Result<(), String> {
+        let parent = path.parent().unwrap_or_else(|| Path::new("."));
+        std::fs::create_dir_all(parent).map_err(|error| {
+            format!(
+                "Không tạo được thư mục cấu hình {}: {error}",
+                parent.display()
+            )
+        })?;
+        let content = serde_json::to_string_pretty(self)
+            .map_err(|error| format!("Không chuyển cấu hình sang JSON: {error}"))?;
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let temporary = parent.join(format!(
+            ".{}.{}.{}.tmp",
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("ghita_config.json"),
+            std::process::id(),
+            stamp
+        ));
+        let write_result = (|| -> std::io::Result<()> {
+            use std::io::Write;
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&temporary)?;
+            file.write_all(content.as_bytes())?;
+            file.sync_all()?;
+            Ok(())
+        })();
+        if let Err(error) = write_result {
+            let _ = std::fs::remove_file(&temporary);
+            return Err(format!(
+                "Không ghi cấu hình tạm {}: {error}",
+                temporary.display()
+            ));
+        }
+        if let Err(error) = replace_config_file(&temporary, path) {
+            let _ = std::fs::remove_file(&temporary);
+            return Err(format!("Không lưu cấu hình {}: {error}", path.display()));
+        }
+        Ok(())
+    }
+
+    #[allow(dead_code)]
+    pub fn save(&self) {
+        if let Err(message) = self.try_save() {
+            eprintln!("Cảnh báo: {message}");
         }
     }
 
@@ -393,22 +522,22 @@ impl AppConfig {
         output_dir: &Path,
         format: AudioFormat,
         quality: AudioQuality,
-    ) {
-        let s = output_dir.to_string_lossy();
-        let cleaned = s.trim().trim_matches(|c| c == '"' || c == '\'').trim();
+    ) -> Result<(), String> {
+        let value = output_dir.to_string_lossy();
+        let cleaned = value.trim().trim_matches(|c| c == '"' || c == '\'').trim();
         self.last_output_dir = Some(PathBuf::from(cleaned));
         self.last_format = Some(format);
         self.last_quality = Some(quality);
-        self.save();
+        self.try_save()
     }
 
-    pub fn set_video_resolution(&mut self, resolution: Option<u32>) {
+    pub fn set_video_resolution(&mut self, resolution: Option<u32>) -> Result<(), String> {
         self.video_resolution = resolution;
-        self.save();
+        self.try_save()
     }
 
-    pub fn set_keep_accents(&mut self, keep: bool) {
+    pub fn set_keep_accents(&mut self, keep: bool) -> Result<(), String> {
         self.keep_accents = keep;
-        self.save();
+        self.try_save()
     }
 }

@@ -24,6 +24,23 @@ impl Transcoder {
         quality: AudioQuality,
         meta: &AudioMetadata,
     ) -> Result<()> {
+        if input_path == output_path {
+            return Err(anyhow!("Input và output không được trùng đường dẫn"));
+        }
+        if !format.is_compatible_quality(quality) {
+            return Err(anyhow!(
+                "Chất lượng {:?} không tương thích với định dạng {:?}",
+                quality,
+                format
+            ));
+        }
+        if !input_path.is_file() {
+            return Err(anyhow!(
+                "Không tìm thấy file đầu vào: {}",
+                input_path.display()
+            ));
+        }
+
         let mut cmd = Command::new(&self.ffmpeg_path);
         cmd.arg("-y").arg("-i").arg(input_path).arg("-vn");
 
@@ -123,6 +140,16 @@ impl Transcoder {
             let err = String::from_utf8_lossy(&output.stderr);
             return Err(anyhow!("FFmpeg chuyển mã thất bại: {}", err));
         }
+        if !output_path.is_file()
+            || std::fs::metadata(output_path)
+                .map(|metadata| metadata.len() == 0)
+                .unwrap_or(true)
+        {
+            return Err(anyhow!(
+                "FFmpeg không tạo được file đầu ra: {}",
+                output_path.display()
+            ));
+        }
 
         Ok(())
     }
@@ -133,6 +160,16 @@ impl Transcoder {
         output_path: &Path,
         meta: &AudioMetadata,
     ) -> Result<()> {
+        if input_path == output_path {
+            return Err(anyhow!("Input và output không được trùng đường dẫn"));
+        }
+        if !input_path.is_file() {
+            return Err(anyhow!(
+                "Không tìm thấy file đầu vào: {}",
+                input_path.display()
+            ));
+        }
+
         let mut cmd = Command::new(&self.ffmpeg_path);
         cmd.arg("-y")
             .arg("-i")
@@ -159,6 +196,16 @@ impl Transcoder {
         if !output.status.success() {
             let err = String::from_utf8_lossy(&output.stderr);
             return Err(anyhow!("FFmpeg đóng gói gốc thất bại: {}", err));
+        }
+        if !output_path.is_file()
+            || std::fs::metadata(output_path)
+                .map(|metadata| metadata.len() == 0)
+                .unwrap_or(true)
+        {
+            return Err(anyhow!(
+                "FFmpeg không tạo được file đầu ra: {}",
+                output_path.display()
+            ));
         }
 
         Ok(())

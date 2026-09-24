@@ -1,3 +1,4 @@
+use anyhow::{anyhow, Result};
 use std::path::{Path, PathBuf};
 
 pub fn remove_vietnamese_accents(input: &str) -> String {
@@ -82,7 +83,7 @@ pub fn clean_path(path: &Path) -> PathBuf {
 }
 
 #[allow(dead_code)]
-pub fn ensure_unique_path(dir: &Path, base_name: &str, ext: &str) -> PathBuf {
+pub fn ensure_unique_path(dir: &Path, base_name: &str, ext: &str) -> Result<PathBuf> {
     ensure_unique_path_with_options(dir, base_name, ext, false)
 }
 
@@ -91,29 +92,57 @@ pub fn ensure_unique_path_with_options(
     base_name: &str,
     ext: &str,
     keep_accents: bool,
-) -> PathBuf {
+) -> Result<PathBuf> {
     let clean_dir = clean_path(dir);
-    let _ = std::fs::create_dir_all(&clean_dir);
+    std::fs::create_dir_all(&clean_dir)?;
     let clean_base = sanitize_name_with_options(base_name, keep_accents);
-    let mut candidate = clean_dir.join(format!("{}.{}", clean_base, ext));
-    let mut counter = 1u32;
+    let clean_ext = validate_extension(ext)?;
+    let mut counter = 0u32;
 
     loop {
+        let file_name = if counter == 0 {
+            format!("{}.{}", clean_base, clean_ext)
+        } else {
+            format!("{} ({}).{}", clean_base, counter, clean_ext)
+        };
+        let candidate = clean_dir.join(file_name);
         match std::fs::OpenOptions::new()
             .write(true)
             .create_new(true)
             .open(&candidate)
         {
-            Ok(_) => return candidate,
-            Err(e) => {
-                if counter >= 10_000 || e.kind() == std::io::ErrorKind::PermissionDenied {
-                    return candidate;
+            Ok(_) => return Ok(candidate),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                if counter >= 10_000 {
+                    return Err(anyhow!(
+                        "Không thể tìm tên tệp duy nhất sau 10.000 lần thử: {}",
+                        candidate.display()
+                    ));
                 }
-                candidate = clean_dir.join(format!("{} ({}).{}", clean_base, counter, ext));
                 counter += 1;
+            }
+            Err(e) => {
+                return Err(anyhow!(
+                    "Không thể tạo tệp đầu ra tại {}: {}",
+                    candidate.display(),
+                    e
+                ));
             }
         }
     }
+}
+
+fn validate_extension(ext: &str) -> Result<&str> {
+    if ext.is_empty()
+        || ext == "."
+        || ext == ".."
+        || !ext
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    {
+        return Err(anyhow!("Phần mở rộng tệp không hợp lệ: {}", ext));
+    }
+    Ok(ext)
 }
 
 pub fn ensure_dir(path: &Path) -> std::io::Result<PathBuf> {

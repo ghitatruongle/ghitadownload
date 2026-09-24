@@ -17,7 +17,7 @@ use super::suno::SunoClient;
 use super::tagger::{AudioMetadata, Tagger};
 use super::transcoder::Transcoder;
 use super::verify;
-use super::youtube::YouTubeClient;
+use super::youtube::{YouTubeClient, YouTubeTrackMeta};
 
 pub const DEFAULT_CONCURRENCY: usize = 3;
 pub const DURATION_TOLERANCE_SECS: f64 = 10.0;
@@ -47,6 +47,7 @@ struct TaskOutcome {
     ok: bool,
     logs: Vec<String>,
     task: DownloadTask,
+    task_index: usize,
 }
 
 pub struct BatchProcessor {
@@ -75,7 +76,6 @@ impl BatchProcessor {
         let mut tasks = Vec::new();
         let spotify_client = SpotifyClient::new();
         let suno_client = SunoClient::new();
-        let yt_client = YouTubeClient::new(self.ytdlp_path.as_path(), self.has_node);
 
         let spinner = ProgressBar::new_spinner();
         spinner.set_style(
@@ -98,72 +98,112 @@ impl BatchProcessor {
             match PlatformParser::parse(trimmed) {
                 UrlType::SpotifyTrack(id) => {
                     spinner.set_message(format!("{} Đang trích xuất bài hát Spotify...", step_str));
-                    if let Ok(meta) = spotify_client.fetch_track(&id).await {
-                        tasks.push(self.spotify_meta_to_task(meta));
+                    match spotify_client.fetch_track(&id).await {
+                        Ok(meta) => tasks.push(self.spotify_meta_to_task(meta)),
+                        Err(e) => {
+                            spinner.println(format!(
+                                "  {} Không lấy được metadata Spotify: {}",
+                                "⚠".yellow(),
+                                e
+                            ));
+                            tasks.push(self.fallback_task(trimmed, "Spotify"));
+                        }
                     }
                 }
                 UrlType::SpotifyAlbum(id) => {
                     spinner.set_message(format!("{} Đang quét Album Spotify...", step_str));
-                    if let Ok((album_name, track_metas)) =
-                        spotify_client.fetch_album_tracks(&id).await
-                    {
-                        println!(
-                            "  {} Tìm thấy Album: {} ({} bài hát)",
-                            "✔".green().bold(),
-                            album_name.cyan(),
-                            track_metas.len()
-                        );
-                        for meta in track_metas {
-                            tasks.push(self.spotify_meta_to_task(meta));
+                    match spotify_client.fetch_album_tracks(&id).await {
+                        Ok((album_name, track_metas)) => {
+                            spinner.println(format!(
+                                "  {} Tìm thấy Album: {} ({} bài hát)",
+                                "✔".green().bold(),
+                                album_name.cyan(),
+                                track_metas.len()
+                            ));
+                            for meta in track_metas {
+                                tasks.push(self.spotify_meta_to_task(meta));
+                            }
+                        }
+                        Err(e) => {
+                            spinner.println(format!(
+                                "  {} Không lấy được album Spotify: {}",
+                                "⚠".yellow(),
+                                e
+                            ));
+                            tasks.push(self.fallback_task(trimmed, "Spotify"));
                         }
                     }
                 }
                 UrlType::SpotifyPlaylist(id) => {
                     spinner.set_message(format!("{} Đang quét Playlist Spotify...", step_str));
-                    if let Ok((pl_name, track_metas)) =
-                        spotify_client.fetch_playlist_tracks(&id).await
-                    {
-                        println!(
-                            "  {} Tìm thấy Playlist: {} ({} bài hát)",
-                            "✔".green().bold(),
-                            pl_name.cyan(),
-                            track_metas.len()
-                        );
-                        for meta in track_metas {
-                            tasks.push(self.spotify_meta_to_task(meta));
+                    match spotify_client.fetch_playlist_tracks(&id).await {
+                        Ok((pl_name, track_metas)) => {
+                            spinner.println(format!(
+                                "  {} Tìm thấy Playlist: {} ({} bài hát)",
+                                "✔".green().bold(),
+                                pl_name.cyan(),
+                                track_metas.len()
+                            ));
+                            for meta in track_metas {
+                                tasks.push(self.spotify_meta_to_task(meta));
+                            }
+                        }
+                        Err(e) => {
+                            spinner.println(format!(
+                                "  {} Không lấy được playlist Spotify: {}",
+                                "⚠".yellow(),
+                                e
+                            ));
+                            tasks.push(self.fallback_task(trimmed, "Spotify"));
                         }
                     }
                 }
                 UrlType::YouTubePlaylist(url) | UrlType::YouTubeMusicPlaylist(url) => {
                     spinner
                         .set_message(format!("{} Đang quét danh sách phát YouTube...", step_str));
-                    if let Ok(items) = yt_client.extract_playlist_items(&url) {
-                        println!(
-                            "  {} Tìm thấy Playlist YouTube với {} video/bài hát",
-                            "✔".green().bold(),
-                            items.len()
-                        );
-                        let total_items = items.len() as u32;
-                        for (idx, item) in items.into_iter().enumerate() {
-                            let track_num = (idx + 1) as u32;
-                            tasks.push(DownloadTask {
-                                display_title: format!("{} - {}", item.uploader, item.title),
-                                source_or_search: item.direct_url,
-                                fallback_searches: vec![format!(
-                                    "ytsearch1:{} {}",
-                                    item.uploader, item.title
-                                )],
-                                expected_duration_secs: None,
-                                metadata: AudioMetadata {
-                                    title: item.title,
-                                    artists: vec![item.uploader],
-                                    album: "YouTube Music".to_string(),
-                                    release_year: None,
-                                    cover_url: item.thumbnail_url,
-                                    track_number: Some(track_num),
-                                    total_tracks: Some(total_items),
-                                },
-                            });
+                    match resolve_youtube_playlist(
+                        self.ytdlp_path.as_path(),
+                        self.has_node,
+                        url.clone(),
+                    )
+                    .await
+                    {
+                        Ok(items) => {
+                            spinner.println(format!(
+                                "  {} Tìm thấy Playlist YouTube với {} video/bài hát",
+                                "✔".green().bold(),
+                                items.len()
+                            ));
+                            let total_items = items.len() as u32;
+                            for (idx, item) in items.into_iter().enumerate() {
+                                let track_num = (idx + 1) as u32;
+                                tasks.push(DownloadTask {
+                                    display_title: format!("{} - {}", item.uploader, item.title),
+                                    source_or_search: item.direct_url,
+                                    fallback_searches: vec![format!(
+                                        "ytsearch1:{} {}",
+                                        item.uploader, item.title
+                                    )],
+                                    expected_duration_secs: None,
+                                    metadata: AudioMetadata {
+                                        title: item.title,
+                                        artists: vec![item.uploader],
+                                        album: "YouTube Music".to_string(),
+                                        release_year: None,
+                                        cover_url: item.thumbnail_url,
+                                        track_number: Some(track_num),
+                                        total_tracks: Some(total_items),
+                                    },
+                                });
+                            }
+                        }
+                        Err(e) => {
+                            spinner.println(format!(
+                                "  {} Không lấy được playlist YouTube: {}",
+                                "⚠".yellow(),
+                                e
+                            ));
+                            tasks.push(self.fallback_task(trimmed, "YouTube"));
                         }
                     }
                 }
@@ -172,42 +212,37 @@ impl BatchProcessor {
                         "{} Đang lấy thông tin bài hát YouTube...",
                         step_str
                     ));
-                    if let Ok(item) = yt_client.fetch_video_info(&url) {
-                        let expected = item.duration_secs.map(|d| d.round() as u64);
-                        tasks.push(DownloadTask {
-                            display_title: format!("{} - {}", item.uploader, item.title),
-                            source_or_search: item.direct_url,
-                            fallback_searches: vec![format!(
-                                "ytsearch1:{} {}",
-                                item.uploader, item.title
-                            )],
-                            expected_duration_secs: expected,
-                            metadata: AudioMetadata {
-                                title: item.title,
-                                artists: vec![item.uploader],
-                                album: "YouTube".to_string(),
-                                release_year: None,
-                                cover_url: item.thumbnail_url,
-                                track_number: None,
-                                total_tracks: None,
-                            },
-                        });
-                    } else {
-                        tasks.push(DownloadTask {
-                            display_title: trimmed.to_string(),
-                            source_or_search: trimmed.to_string(),
-                            fallback_searches: Vec::new(),
-                            expected_duration_secs: None,
-                            metadata: AudioMetadata {
-                                title: sanitize_name(trimmed),
-                                artists: vec!["YouTube".to_string()],
-                                album: "YouTube".to_string(),
-                                release_year: None,
-                                cover_url: None,
-                                track_number: None,
-                                total_tracks: None,
-                            },
-                        });
+                    match resolve_youtube_video(
+                        self.ytdlp_path.as_path(),
+                        self.has_node,
+                        url.clone(),
+                    )
+                    .await
+                    {
+                        Ok(item) => {
+                            let expected = item.duration_secs.map(|d| d.round() as u64);
+                            tasks.push(DownloadTask {
+                                display_title: format!("{} - {}", item.uploader, item.title),
+                                source_or_search: item.direct_url,
+                                fallback_searches: vec![format!(
+                                    "ytsearch1:{} {}",
+                                    item.uploader, item.title
+                                )],
+                                expected_duration_secs: expected,
+                                metadata: AudioMetadata {
+                                    title: item.title,
+                                    artists: vec![item.uploader],
+                                    album: "YouTube".to_string(),
+                                    release_year: None,
+                                    cover_url: item.thumbnail_url,
+                                    track_number: None,
+                                    total_tracks: None,
+                                },
+                            });
+                        }
+                        Err(_) => {
+                            tasks.push(self.fallback_task(trimmed, "YouTube"));
+                        }
                     }
                 }
                 UrlType::SunoTrack(uuid) => {
@@ -215,37 +250,119 @@ impl BatchProcessor {
                         "{} Đang lấy thông tin bài hát Suno AI...",
                         step_str
                     ));
-                    let meta = suno_client.fetch_track(&uuid).await.unwrap_or_else(|_| {
-                        crate::core::suno::SunoTrackMeta {
-                            uuid: uuid.clone(),
-                            title: format!("Suno AI - {}", &uuid[0..8.min(uuid.len())]),
-                            artist: "Suno AI".to_string(),
-                            audio_url: format!("https://cdn1.suno.ai/{}.mp3", uuid),
-                            fallback_audio_url: format!(
-                                "https://audiopipe.suno.ai/?item_id={}",
-                                uuid
-                            ),
-                            cover_url: None,
+                    match suno_client.fetch_track(&uuid).await {
+                        Ok(meta) => {
+                            spinner.println(format!(
+                                "  {} Tìm thấy bài hát Suno: {}",
+                                "✔".green().bold(),
+                                meta.title.cyan()
+                            ));
+
+                            let mut fallback_searches = meta.fallback_audio_urls.clone();
+                            fallback_searches
+                                .push(format!("ytsearch1:{} {}", meta.artist, meta.title));
+                            fallback_searches
+                                .push(format!("ytsearch3:{} {}", meta.artist, meta.title));
+                            tasks.push(DownloadTask {
+                                display_title: format!("{} - {}", meta.artist, meta.title),
+                                source_or_search: format!("suno:{}", uuid),
+                                fallback_searches,
+                                expected_duration_secs: meta
+                                    .duration_secs
+                                    .map(|d| d.round() as u64),
+                                metadata: AudioMetadata {
+                                    title: meta.title,
+                                    artists: vec![meta.artist],
+                                    album: "Suno AI Music".to_string(),
+                                    release_year: None,
+                                    cover_url: meta.cover_url,
+                                    track_number: None,
+                                    total_tracks: None,
+                                },
+                            });
                         }
-                    });
-
-                    println!(
-                        "  {} Tìm thấy bài hát Suno: {}",
-                        "✔".green().bold(),
-                        meta.title.cyan()
-                    );
-
+                        Err(error) => {
+                            spinner.println(format!(
+                                "  {} Không lấy được media Suno: {}",
+                                "✖".red(),
+                                error
+                            ));
+                            tasks.push(self.fallback_task(trimmed, "Suno AI"));
+                        }
+                    }
+                }
+                UrlType::SunoPlaylist(uuid) => {
+                    spinner.set_message(format!("{} Đang quét Playlist Suno AI...", step_str));
+                    match suno_client.fetch_playlist(&uuid).await {
+                        Ok((playlist_name, tracks)) => {
+                            spinner.println(format!(
+                                "  {} Tìm thấy Playlist Suno: {} ({} bài hát)",
+                                "✔".green().bold(),
+                                playlist_name.cyan(),
+                                tracks.len()
+                            ));
+                            let total = tracks.len() as u32;
+                            for (idx, meta) in tracks.into_iter().enumerate() {
+                                let mut fallback_searches = meta.fallback_audio_urls.clone();
+                                fallback_searches
+                                    .push(format!("ytsearch1:{} {}", meta.artist, meta.title));
+                                fallback_searches
+                                    .push(format!("ytsearch3:{} {}", meta.artist, meta.title));
+                                tasks.push(DownloadTask {
+                                    display_title: format!("{} - {}", meta.artist, meta.title),
+                                    source_or_search: format!("suno:{}", meta.uuid),
+                                    fallback_searches,
+                                    expected_duration_secs: meta
+                                        .duration_secs
+                                        .map(|d| d.round() as u64),
+                                    metadata: AudioMetadata {
+                                        title: meta.title,
+                                        artists: vec![meta.artist],
+                                        album: playlist_name.clone(),
+                                        release_year: None,
+                                        cover_url: meta.cover_url,
+                                        track_number: Some((idx + 1) as u32),
+                                        total_tracks: Some(total),
+                                    },
+                                });
+                            }
+                        }
+                        Err(error) => {
+                            spinner.println(format!(
+                                "  {} Không lấy được playlist Suno: {}",
+                                "✖".red(),
+                                error
+                            ));
+                            tasks.push(self.fallback_task(trimmed, "Suno AI"));
+                        }
+                    }
+                }
+                UrlType::DirectMedia(url) => {
+                    spinner.set_message(format!(
+                        "{} Đang nhận diện tệp media trực tiếp...",
+                        step_str
+                    ));
+                    let title = url
+                        .rsplit('/')
+                        .next()
+                        .map(|name| name.split('?').next().unwrap_or(name).to_string())
+                        .filter(|name| !name.is_empty())
+                        .unwrap_or_else(|| "media_track".to_string());
+                    let title = title
+                        .rsplit_once('.')
+                        .map(|(stem, _)| stem.to_string())
+                        .unwrap_or(title);
                     tasks.push(DownloadTask {
-                        display_title: format!("{} - {}", meta.artist, meta.title),
-                        source_or_search: meta.audio_url,
-                        fallback_searches: vec![meta.fallback_audio_url],
+                        display_title: title.clone(),
+                        source_or_search: url.clone(),
+                        fallback_searches: Vec::new(),
                         expected_duration_secs: None,
                         metadata: AudioMetadata {
-                            title: meta.title,
-                            artists: vec![meta.artist],
-                            album: "Suno AI Music".to_string(),
+                            title,
+                            artists: vec!["Direct".to_string()],
+                            album: "Direct Media".to_string(),
                             release_year: None,
-                            cover_url: meta.cover_url,
+                            cover_url: None,
                             track_number: None,
                             total_tracks: None,
                         },
@@ -256,7 +373,14 @@ impl BatchProcessor {
                         "{} Đang lấy thông tin {}...",
                         step_str, platform_name
                     ));
-                    if let Ok(item) = yt_client.fetch_media_info(&url, &platform_name) {
+                    if let Ok(item) = resolve_youtube_media(
+                        self.ytdlp_path.as_path(),
+                        self.has_node,
+                        url.clone(),
+                        platform_name.clone(),
+                    )
+                    .await
+                    {
                         tasks.push(DownloadTask {
                             display_title: format!("{} - {}", item.uploader, item.title),
                             source_or_search: item.direct_url,
@@ -322,6 +446,25 @@ impl BatchProcessor {
         Ok(tasks)
     }
 
+    fn fallback_task(&self, source: &str, platform_name: &str) -> DownloadTask {
+        let title = sanitize_name(source);
+        DownloadTask {
+            display_title: format!("{} - {}", platform_name, title),
+            source_or_search: source.to_string(),
+            fallback_searches: Vec::new(),
+            expected_duration_secs: None,
+            metadata: AudioMetadata {
+                title,
+                artists: vec![platform_name.to_string()],
+                album: platform_name.to_string(),
+                release_year: None,
+                cover_url: None,
+                track_number: None,
+                total_tracks: None,
+            },
+        }
+    }
+
     fn spotify_meta_to_task(&self, meta: SpotifyTrackMeta) -> DownloadTask {
         let artist_str = meta.artists.join(", ");
         let display_title = format!("{} - {}", artist_str, meta.title);
@@ -378,8 +521,7 @@ impl BatchProcessor {
         }
 
         let clean_output_dir = ensure_dir(&self.settings.output_dir)?;
-        let temp_dir = clean_output_dir.join(".ghita_temp");
-        ensure_dir(&temp_dir)?;
+        let temp_dir = create_execution_temp_dir(&clean_output_dir)?;
 
         println!(
             "\n{} Chuẩn bị tải {} bài hát (song song tối đa {}) vào thư mục: {}\n",
@@ -425,6 +567,7 @@ impl BatchProcessor {
                             ok: false,
                             logs: vec![format!("    {} Mất khóa điều phối tác vụ", "✖".red())],
                             task,
+                            task_index: index,
                         };
                     }
                 };
@@ -463,25 +606,48 @@ impl BatchProcessor {
                         task.display_title
                     ));
 
-                    let ytdlp_p = ytdlp.clone();
-                    let temp = temp_dir.clone();
-                    let tgt = target.clone();
-                    let bar = handle.clone();
-                    let dl_res = tokio::task::spawn_blocking(move || {
-                        let dl = StreamDownloader::new(ytdlp_p.as_path(), has_node);
-                        dl.download_stream(&tgt, &temp, mode, Some(&bar))
-                    })
-                    .await;
-
-                    let path = match dl_res {
-                        Ok(Ok(p)) => p,
-                        Ok(Err(e)) => {
-                            logs.push(format!("    {} {}", "⚠".yellow(), e));
-                            continue;
+                    let path = if let Some(uuid) = target.strip_prefix("suno:") {
+                        let suno_temp_path = temp_dir.join(format!(
+                            "suno_{}_{}_{}.m4a",
+                            std::process::id(),
+                            index,
+                            attempt_idx
+                        ));
+                        let uuid_str = uuid.to_string();
+                        let bar_clone = handle.clone();
+                        let s_client = SunoClient::new();
+                        let p_clone = suno_temp_path.clone();
+                        match s_client
+                            .download_track(&uuid_str, &p_clone, Some(&bar_clone))
+                            .await
+                        {
+                            Ok(()) => p_clone,
+                            Err(e) => {
+                                logs.push(format!("    {} {}", "✖".red(), e));
+                                continue;
+                            }
                         }
-                        Err(e) => {
-                            logs.push(format!("    {} Lỗi luồng tải: {}", "⚠".yellow(), e));
-                            continue;
+                    } else {
+                        let ytdlp_p = ytdlp.clone();
+                        let temp = temp_dir.clone();
+                        let tgt = target.clone();
+                        let bar = handle.clone();
+                        let dl_res = tokio::task::spawn_blocking(move || {
+                            let dl = StreamDownloader::new(ytdlp_p.as_path(), has_node);
+                            dl.download_stream(&tgt, &temp, mode, Some(&bar))
+                        })
+                        .await;
+
+                        match dl_res {
+                            Ok(Ok(p)) => p,
+                            Ok(Err(e)) => {
+                                logs.push(format!("    {} {}", "✖".red(), e));
+                                continue;
+                            }
+                            Err(e) => {
+                                logs.push(format!("    {} Lỗi luồng tải: {}", "⚠".yellow(), e));
+                                continue;
+                            }
                         }
                     };
 
@@ -489,6 +655,31 @@ impl BatchProcessor {
                     let probe_path = path.clone();
                     let expected = task.expected_duration_secs;
                     let check = tokio::task::spawn_blocking(move || {
+                        if verify::has_media_signature(&probe_path).is_err() {
+                            let filename = probe_path
+                                .file_name()
+                                .and_then(|n| n.to_str())
+                                .unwrap_or_default();
+                            let suno_re = regex::Regex::new(
+                                r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+                            )
+                            .unwrap();
+                            if let Some(caps) = suno_re.captures(filename) {
+                                let uuid = caps[0].to_string();
+                                if let Ok(mut bytes) = std::fs::read(&probe_path) {
+                                    let s_client = SunoClient::new();
+                                    if let Ok(rt) = tokio::runtime::Builder::new_current_thread()
+                                        .enable_all()
+                                        .build()
+                                    {
+                                        let _ = rt.block_on(
+                                            s_client.decrypt_clip_media(&uuid, &mut bytes),
+                                        );
+                                        let _ = std::fs::write(&probe_path, &bytes);
+                                    }
+                                }
+                            }
+                        }
                         verify::probe_media(&probe_path, ff.as_path()).and_then(|info| {
                             verify::validate_downloaded(&info, expected, DURATION_TOLERANCE_SECS)
                         })
@@ -502,11 +693,7 @@ impl BatchProcessor {
                         }
                         Ok(Err(e)) => {
                             let _ = std::fs::remove_file(&path);
-                            logs.push(format!(
-                                "    {} Tệp không đạt kiểm chứng: {}",
-                                "⚠".yellow(),
-                                e
-                            ));
+                            logs.push(format!("    {} Tệp không đạt kiểm chứng: {}", "✖".red(), e));
                         }
                         Err(e) => {
                             let _ = std::fs::remove_file(&path);
@@ -529,6 +716,7 @@ impl BatchProcessor {
                             ok: false,
                             logs,
                             task,
+                            task_index: index,
                         };
                     }
                 };
@@ -555,12 +743,24 @@ impl BatchProcessor {
                 } else {
                     task.display_title.clone()
                 };
-                let final_path = crate::utils::file_helper::ensure_unique_path_with_options(
+                let final_path = match crate::utils::file_helper::ensure_unique_path_with_options(
                     &out_dir,
                     &formatted_title,
                     &ext,
                     settings.keep_accents,
-                );
+                ) {
+                    Ok(path) => path,
+                    Err(e) => {
+                        handle.finish_and_clear();
+                        logs.push(format!("    {} {}", "✖".red(), e));
+                        return TaskOutcome {
+                            ok: false,
+                            logs,
+                            task,
+                            task_index: index,
+                        };
+                    }
+                };
 
                 handle.set_message(format!(
                     "[{}/{}] hoàn thiện • {}",
@@ -610,7 +810,10 @@ impl BatchProcessor {
                             "🏷".magenta(),
                             "Nhúng ID3 & ảnh bìa: Xong".green()
                         )),
-                        Err(_) => logs.push(format!("    {}", "Bỏ qua ảnh bìa".yellow())),
+                        Err(e) => {
+                            logs.push(format!("    {} Ghi metadata thất bại: {}", "✖".red(), e));
+                            ok = false;
+                        }
                     }
                 }
 
@@ -629,12 +832,18 @@ impl BatchProcessor {
                 }
 
                 handle.finish_and_clear();
-                TaskOutcome { ok, logs, task }
+                TaskOutcome {
+                    ok,
+                    logs,
+                    task,
+                    task_index: index,
+                }
             });
         }
 
         let mut success_count = 0usize;
         let mut failed_tasks: Vec<DownloadTask> = Vec::new();
+        let mut task_results: Vec<Option<Result<(), ()>>> = vec![None; total];
 
         while let Some(joined) = set.join_next().await {
             match joined {
@@ -642,42 +851,61 @@ impl BatchProcessor {
                     for line in &outcome.logs {
                         let _ = multi.println(line);
                     }
+                    task_results[outcome.task_index] = Some(Err(()));
                     if outcome.ok {
                         success_count += 1;
+                        task_results[outcome.task_index] = Some(Ok(()));
                     } else {
                         failed_tasks.push(outcome.task);
                     }
                 }
                 Err(e) => {
                     let _ = multi.println(format!("{}", format!("    Lỗi tác vụ: {}", e).red()));
+                    let missing = task_results.iter().position(|result| result.is_none());
+                    if let Some(index) = missing {
+                        task_results[index] = Some(Err(()));
+                        failed_tasks.push(tasks[index].clone());
+                    }
                 }
             }
         }
-
-        let _ = std::fs::remove_dir_all(&temp_dir);
 
         if !failed_tasks.is_empty() {
             let queue = FailedQueue {
                 settings: (*settings).clone(),
                 tasks: failed_tasks.clone(),
             };
-            if let Ok(json) = serde_json::to_string_pretty(&queue) {
-                let queue_path = clean_output_dir.join(FAILED_QUEUE_FILE);
-                if std::fs::write(&queue_path, json).is_ok() {
+            let queue_path = clean_output_dir.join(FAILED_QUEUE_FILE);
+            let temp_queue_path = temp_dir.join(FAILED_QUEUE_FILE);
+            let queue_result = match serde_json::to_vec_pretty(&queue) {
+                Ok(json) => std::fs::write(&temp_queue_path, json)
+                    .and_then(|_| replace_file(&temp_queue_path, &queue_path)),
+                Err(e) => Err(std::io::Error::other(e)),
+            };
+            match queue_result {
+                Ok(()) => println!(
+                    "{}",
+                    format!(
+                        "  Đã lưu hàng đợi {} bài lỗi vào: {}",
+                        failed_tasks.len(),
+                        queue_path.display()
+                    )
+                    .yellow()
+                ),
+                Err(e) => {
+                    let _ = std::fs::remove_file(&temp_queue_path);
+                    let _ = std::fs::remove_dir_all(&temp_dir);
                     println!(
                         "{}",
-                        format!(
-                            "  Đã lưu hàng đợi {} bài lỗi vào: {}",
-                            failed_tasks.len(),
-                            queue_path.display()
-                        )
-                        .yellow()
+                        format!("  Không thể lưu hàng đợi bài lỗi: {}", e).red()
                     );
+                    return Err(anyhow!("Không thể lưu hàng đợi bài lỗi: {}", e));
                 }
             }
         } else {
             let _ = std::fs::remove_file(clean_output_dir.join(FAILED_QUEUE_FILE));
         }
+        let _ = std::fs::remove_dir_all(&temp_dir);
 
         println!("══════════════════════════════════════════════");
         println!(
@@ -697,4 +925,86 @@ impl BatchProcessor {
             failed_tasks,
         })
     }
+}
+
+async fn resolve_youtube_playlist(
+    ytdlp_path: &Path,
+    has_node: bool,
+    url: String,
+) -> Result<Vec<YouTubeTrackMeta>> {
+    let path = ytdlp_path.to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        YouTubeClient::new(&path, has_node).extract_playlist_items(&url)
+    })
+    .await
+    .map_err(|error| anyhow!("Không thể đọc playlist YouTube: {error}"))?
+}
+
+async fn resolve_youtube_video(
+    ytdlp_path: &Path,
+    has_node: bool,
+    url: String,
+) -> Result<YouTubeTrackMeta> {
+    let path = ytdlp_path.to_path_buf();
+    tokio::task::spawn_blocking(move || YouTubeClient::new(&path, has_node).fetch_video_info(&url))
+        .await
+        .map_err(|error| anyhow!("Không thể đọc video YouTube: {error}"))?
+}
+
+async fn resolve_youtube_media(
+    ytdlp_path: &Path,
+    has_node: bool,
+    url: String,
+    platform_name: String,
+) -> Result<YouTubeTrackMeta> {
+    let path = ytdlp_path.to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        YouTubeClient::new(&path, has_node).fetch_media_info(&url, &platform_name)
+    })
+    .await
+    .map_err(|error| anyhow!("Không thể đọc media YouTube: {error}"))?
+}
+
+fn replace_file(source: &Path, destination: &Path) -> std::io::Result<()> {
+    match std::fs::rename(source, destination) {
+        Ok(()) => Ok(()),
+        Err(_) if destination.exists() => {
+            let backup = destination.with_extension(format!(
+                "json.{}.{}.bak",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_nanos()
+            ));
+            std::fs::rename(destination, &backup)?;
+            match std::fs::rename(source, destination) {
+                Ok(()) => {
+                    let _ = std::fs::remove_file(backup);
+                    Ok(())
+                }
+                Err(error) => {
+                    let _ = std::fs::rename(&backup, destination);
+                    Err(error)
+                }
+            }
+        }
+        Err(error) => Err(error),
+    }
+}
+
+fn create_execution_temp_dir(output_dir: &Path) -> Result<PathBuf> {
+    let base = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    for attempt in 0..100u32 {
+        let path = output_dir.join(format!(".ghita_temp_{}_{}", base, attempt));
+        match std::fs::create_dir(&path) {
+            Ok(()) => return Ok(path),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(anyhow!("Không thể tạo thư mục tạm: {}", e)),
+        }
+    }
+    Err(anyhow!("Không thể tạo thư mục tạm duy nhất"))
 }

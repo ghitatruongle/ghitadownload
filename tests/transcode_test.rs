@@ -90,7 +90,11 @@ async fn test_transcode_and_tagging_pipeline() {
         AudioQuality::Flac_24bit_96k,
         &meta,
     );
-    assert!(res_96.is_ok(), "FLAC 96k transcode failed: {:?}", res_96.err());
+    assert!(
+        res_96.is_ok(),
+        "FLAC 96k transcode failed: {:?}",
+        res_96.err()
+    );
     assert!(flac_96_path.exists());
 
     let aac_path = test_dir.join("test_aac.m4a");
@@ -112,7 +116,11 @@ async fn test_transcode_and_tagging_pipeline() {
         AudioQuality::Aac_320k,
         &meta,
     );
-    assert!(res_aac_320.is_ok(), "AAC 320k transcode failed: {:?}", res_aac_320.err());
+    assert!(
+        res_aac_320.is_ok(),
+        "AAC 320k transcode failed: {:?}",
+        res_aac_320.err()
+    );
     assert!(aac_320_path.exists());
 
     let wav_24_path = test_dir.join("test_24bit_48k.wav");

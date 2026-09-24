@@ -25,6 +25,14 @@ pub struct CliApp;
 
 impl CliApp {
     pub async fn prepare_env() -> Option<EnvTools> {
+        Self::prepare_env_with_install(true).await
+    }
+
+    pub async fn prepare_env_headless() -> Option<EnvTools> {
+        Self::prepare_env_with_install(false).await
+    }
+
+    async fn prepare_env_with_install(allow_prompt: bool) -> Option<EnvTools> {
         let ytdlp_path = match find_ytdlp() {
             Some(p) => p,
             None => {
@@ -41,18 +49,33 @@ impl CliApp {
             None => {
                 println!(
                     "{}",
-                    "⚠ Không tìm thấy FFmpeg (công cụ chuyển mã & gắn thẻ âm thanh)!".yellow().bold()
+                    "⚠ Không tìm thấy FFmpeg (công cụ chuyển mã & gắn thẻ âm thanh)!"
+                        .yellow()
+                        .bold()
                 );
-                let auto_install = Confirm::new("Bạn có muốn Ghita Downloader tự động cài đặt FFmpeg về máy không?")
-                    .with_default(true)
-                    .with_help_message("Chỉ cần thực hiện 1 lần, app sẽ tự động tải FFmpeg và cấu hình cho bạn")
-                    .prompt()
-                    .unwrap_or(false);
+                if !allow_prompt {
+                    eprintln!(
+                        "{}",
+                        "❌ Không tìm thấy FFmpeg. Chế độ headless không tự cài đặt; hãy cài thủ công hoặc chạy ứng dụng không có tham số.".red().bold()
+                    );
+                    return None;
+                }
+
+                let auto_install = Confirm::new(
+                    "Bạn có muốn Ghita Downloader tự động cài đặt FFmpeg về máy không?",
+                )
+                .with_default(true)
+                .with_help_message(
+                    "Chỉ cần thực hiện 1 lần, app sẽ tự động tải FFmpeg và cấu hình cho bạn",
+                )
+                .prompt()
+                .unwrap_or(false);
 
                 if auto_install {
                     println!(
                         "{}",
-                        "⏳ Đang tự động tải và thiết lập FFmpeg... (vui lòng đợi trong giây lát)".cyan()
+                        "⏳ Đang tự động tải và thiết lập FFmpeg... (vui lòng đợi trong giây lát)"
+                            .cyan()
                     );
                     match install_ffmpeg_auto() {
                         Ok(p) => {
@@ -64,7 +87,11 @@ impl CliApp {
                             p
                         }
                         Err(e) => {
-                            println!("{} {}", "❌ Không thể tự động cài đặt FFmpeg:".red().bold(), e);
+                            println!(
+                                "{} {}",
+                                "❌ Không thể tự động cài đặt FFmpeg:".red().bold(),
+                                e
+                            );
                             return None;
                         }
                     }
@@ -89,16 +116,21 @@ impl CliApp {
         Self::print_banner();
 
         let env = match Self::prepare_env().await {
-            Some(e) => e,
-            None => return Ok(()),
+            Some(env) => env,
+            None => {
+                return Err(anyhow::anyhow!(
+                    "Không thể chuẩn bị yt-dlp hoặc FFmpeg. Quá trình cài đặt phụ thuộc đã thất bại."
+                ));
+            }
         };
         let ytdlp_path = env.ytdlp_path;
         let ffmpeg_path = env.ffmpeg_path;
         let has_node_runtime = env.has_node;
-        let mut config = AppConfig::load();
+        let mut config = AppConfig::try_load().map_err(anyhow::Error::msg)?;
 
-        let terminal_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-        let mut active_output_dir = terminal_dir;
+        let terminal_dir =
+            std::env::current_dir().unwrap_or_else(|_| AppConfig::system_music_dir());
+        let mut active_output_dir = config.initial_output_dir(terminal_dir);
         let mut active_format = config.last_format.unwrap_or(AudioFormat::Mp3);
         let mut active_quality = config.last_quality.unwrap_or(AudioQuality::Mp3_320k);
         let mut active_resolution = config.video_resolution;
@@ -204,11 +236,25 @@ impl CliApp {
             } else if choice.starts_with("⚙") {
                 println!("\n{}", "⚙ THAY ĐỔI CÀI ĐẶT ỨNG DỤNG:".cyan().bold());
 
-                let new_dir_str = Text::new("📁 Chọn hoặc nhập/dán thư mục lưu nhạc:")
+                let default_music = AppConfig::system_music_dir();
+                let prompt_label = format!(
+                    "📁 Chọn hoặc nhập/dán thư mục lưu (Mặc định: {}):",
+                    default_music.display()
+                );
+                let new_dir_str = Text::new(&prompt_label)
                     .with_default(&active_output_dir.display().to_string())
-                    .with_help_message("Nhấn Enter để giữ nguyên, hoặc dán đường dẫn mới (hỗ trợ cả dấu ngoặc kép)")
+                    .with_help_message("Nhấn Enter để giữ nguyên, dán đường dẫn mới, hoặc nhập 'default' để dùng thư mục Music của máy")
                     .prompt()?;
-                let new_dir = clean_path(Path::new(new_dir_str.trim()));
+                let trimmed = new_dir_str.trim();
+                let new_dir = if trimmed.eq_ignore_ascii_case("default")
+                    || trimmed.eq_ignore_ascii_case("music")
+                {
+                    default_music
+                } else if trimmed.is_empty() {
+                    active_output_dir.clone()
+                } else {
+                    clean_path(Path::new(trimmed))
+                };
                 active_output_dir = new_dir.clone();
 
                 let format_options = vec![
@@ -238,10 +284,14 @@ impl CliApp {
                                 .with_help_message("Chọn mức chất lượng theo nhu cầu")
                                 .prompt()?;
                         active_quality = new_quality;
-                        config.update_last_used(&active_output_dir, active_format, active_quality);
+                        config
+                            .update_last_used(&active_output_dir, active_format, active_quality)
+                            .map_err(anyhow::Error::msg)?;
                     }
                     AudioFormat::Original => {
-                        config.update_last_used(&active_output_dir, active_format, active_quality);
+                        config
+                            .update_last_used(&active_output_dir, active_format, active_quality)
+                            .map_err(anyhow::Error::msg)?;
                     }
                     AudioFormat::Video => {
                         let res_options = vec!["1080p", "720p", "480p", "Best (cao nhất)"];
@@ -256,8 +306,12 @@ impl CliApp {
                             "480p" => Some(480),
                             _ => None,
                         };
-                        config.set_video_resolution(active_resolution);
-                        config.update_last_used(&active_output_dir, active_format, active_quality);
+                        config
+                            .set_video_resolution(active_resolution)
+                            .map_err(anyhow::Error::msg)?;
+                        config
+                            .update_last_used(&active_output_dir, active_format, active_quality)
+                            .map_err(anyhow::Error::msg)?;
                     }
                 }
 
@@ -270,7 +324,9 @@ impl CliApp {
                     .with_starting_cursor(default_accent_cursor)
                     .prompt()?;
                 let keep_accents = accent_choice.starts_with("Giữ");
-                config.set_keep_accents(keep_accents);
+                config
+                    .set_keep_accents(keep_accents)
+                    .map_err(anyhow::Error::msg)?;
 
                 println!(
                     "\n{} Đã cập nhật và áp dụng cài đặt thành công!\n",
@@ -365,20 +421,6 @@ impl CliApp {
             _ => quality.to_string(),
         };
         let raw_dir = dir.display().to_string();
-        let display_dir = if raw_dir.chars().count() > 41 {
-            let end_chars: String = raw_dir
-                .chars()
-                .rev()
-                .take(38)
-                .collect::<Vec<_>>()
-                .into_iter()
-                .rev()
-                .collect();
-            format!("...{}", end_chars)
-        } else {
-            raw_dir
-        };
-
         let accent_label = if keep_accents {
             "Có dấu (Unicode)".to_string()
         } else {
@@ -387,31 +429,19 @@ impl CliApp {
 
         println!(
             "{}",
-            "┌─────────────────────────────────────────────────────────────┐".cyan()
+            "┌─ CẤU HÌNH ĐANG SỬ DỤNG ─────────────────────────────────────".cyan()
         );
+        println!("│ 📁 Thư mục lưu : {}", raw_dir.yellow().bold());
+        println!(
+            "│ 🎵 Định dạng   : {} (.{})",
+            format!("{:?}", format).green().bold(),
+            ext.green()
+        );
+        println!("│ 🎚 Chất lượng  : {}", quality_label.cyan());
+        println!("│ 🔤 Tên tệp     : {}", accent_label.bright_white());
         println!(
             "{}",
-            format!(
-                "│             CẤU HÌNH HIỆN TẠI ĐANG DÙNG ({})             │",
-                APP_VERSION
-            )
-            .cyan()
-            .bold()
-        );
-        println!(
-            "{}",
-            "├─────────────────────────────────────────────────────────────┤".cyan()
-        );
-        println!("│ 📁 Thư mục lưu:  {:<43} │", display_dir.yellow());
-        println!(
-            "│ 🎵 Định dạng:    {:<43} │",
-            format!("{:?} (.{})", format, ext).green().bold()
-        );
-        println!("│ 🎚 Chất lượng:   {:<43} │", quality_label.cyan());
-        println!("│ 🔤 Tên tệp:      {:<43} │", accent_label.bright_white());
-        println!(
-            "{}",
-            "└─────────────────────────────────────────────────────────────┘".cyan()
+            "└─────────────────────────────────────────────────────────────".cyan()
         );
         println!();
     }
@@ -424,7 +454,7 @@ impl CliApp {
         println!(
             "{}",
             format!(
-                "║                 GHITA DOWNLOADER ({})                     ║",
+                "║                 GHITA DOWNLOADER ({:<10})              ║",
                 APP_VERSION
             )
             .cyan()
@@ -436,7 +466,7 @@ impl CliApp {
         );
         println!(
             "{}",
-            "║  TikTok, FB, Threads | MP3/WAV/FLAC/AAC/Video | Tải song song ║".bright_white()
+            "║  TikTok, FB, Reels, X | MP3/WAV/FLAC/AAC/Video | Song song   ║".bright_white()
         );
         println!(
             "{}",

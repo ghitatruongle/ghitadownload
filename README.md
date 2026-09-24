@@ -21,7 +21,7 @@ Ghita Download được thiết kế cho sự ổn định tuyệt đối: hỗ 
   - **Mạng xã hội & Video ngắn:** Tải video và trích xuất âm thanh từ TikTok, Facebook Video và Threads.
 
 - **Tự động hóa & Khả năng tương thích cao:**
-  - **1-Click FFmpeg Setup:** Tự động phát hiện và hỗ trợ cài đặt công cụ giải mã FFmpeg cho máy tính mới qua winget hoặc tải bản static nhúng sẵn.
+  - **1-Click FFmpeg Setup:** Tự động phát hiện và hỗ trợ cài đặt công cụ giải mã FFmpeg cho máy tính mới qua winget hoặc bản static tải về tại thời điểm cài đặt.
   - **Tự cập nhật yt-dlp:** Cập nhật công cụ tải lên phiên bản mới nhất từ GitHub Releases chính thức trực tiếp trong menu hoặc qua dòng lệnh.
   - **Tùy chọn dấu tiếng Việt:** Mặc định khử dấu an toàn (`ASCII`) cho màn hình xe hơi/USB cổ điển, hoặc bật giữ nguyên Unicode tiếng Việt (`Nguyễn Văn A - Bài Hát.mp3`).
   - **Đánh số thứ tự track:** Tự động thêm tiền tố thứ tự (`01. Tên bài.mp3`) và nhúng thẻ tag ID3/Vorbis track index cho Album/Playlist.
@@ -35,30 +35,36 @@ Ghita Download được thiết kế cho sự ổn định tuyệt đối: hỗ 
 
 ## Hướng Dẫn Cài Đặt & Thiết Lập (1-Click Installer)
 
-Ghita Download cung cấp **tệp cài đặt duy nhất nằm trong thư mục `Release/` (`Release/ghitadownload_0.0.2.exe`)** tự động giải nén ứng dụng, nhúng sẵn công cụ phụ trợ, kiểm tra FFmpeg và cấu hình biến môi trường `PATH` để bạn có thể gọi từ bất kỳ thư mục nào trên máy tính.
+Ghita Download cung cấp **tệp cài đặt duy nhất nằm trong thư mục `Release/` (`Release/ghitadownload_0.0.3-beta.exe`)** tự động giải nén ứng dụng, nhúng sẵn công cụ phụ trợ, kiểm tra FFmpeg và cấu hình biến môi trường `PATH` để bạn có thể gọi từ bất kỳ thư mục nào trên máy tính.
+
+Bản `0.0.3-beta` là bản thử nghiệm dành cho người dùng Windows muốn kiểm tra độ ổn định trước khi phát hành bản ổn định.
 
 ### Cách 1: Cài đặt bằng tệp trong `Release/` (Khuyên dùng)
-1. Mở thư mục **`Release/`**, nhấp đúp chuột vào tệp **`ghitadownload_0.0.2.exe`**.
+1. Mở thư mục **`Release/`**, nhấp đúp chuột vào tệp **`ghitadownload_0.0.3-beta.exe`**.
 2. Chương trình sẽ hiển thị giao diện cài đặt tương tác:
    - Thư mục cài đặt mặc định: `%LOCALAPPDATA%\GhitaDownload`
    - Nhấn **[ENTER]** để xác nhận cài đặt ngay (hoặc dán đường dẫn thư mục tùy chỉnh nếu muốn).
 3. Trình cài đặt sẽ tự động:
    - Cài đặt `ghitadownload.exe` và alias gọi nhanh `ghita.exe`.
    - Cài đặt công cụ hỗ trợ `bin/yt-dlp.exe`.
-   - Kiểm tra và tự động hỗ trợ cài đặt công cụ giải mã âm thanh `bin/ffmpeg.exe` nếu máy chưa có.
+   - Kiểm tra FFmpeg; nếu máy chưa có, ứng dụng chỉ tự tải khi được cấu hình `GHITA_FFMPEG_SOURCE_URL` và `GHITA_FFMPEG_SHA256` với URL HTTPS bất biến. Nếu không có cấu hình, ứng dụng vẫn cài đặt được nhưng sẽ yêu cầu cài FFmpeg thủ công khi chạy.
+   - Lưu đường dẫn tùy chỉnh tại `%LOCALAPPDATA%\GhitaDownload\install-dir.txt` để lệnh gỡ cài đặt tìm đúng nơi đã cài.
    - **Tự động thêm đường dẫn vào biến môi trường PATH** của người dùng (không cần quyền Administrator).
 4. Nhấn **[ENTER]** để hoàn tất.
 
 ### Cách 2: Tự biên dịch từ mã nguồn (Dành cho lập trình viên)
 1. Đảm bảo máy đã cài đặt [Rust & Cargo](https://rustup.rs).
-2. Nhấp đúp vào tệp **`build_installer.bat`** (hoặc chạy lệnh):
+2. Chuẩn bị `bin\yt-dlp.exe` hợp lệ, sau đó nhấp đúp vào tệp **`build_installer.bat`**. Script dùng `cargo build --locked`, xác minh artifact tạm rồi mới thay thế artifact trong `Release/`:
    ```powershell
-   cargo build --release --bin ghitadownload
-   cargo build --release --bin ghitadownload-setup
-   if not exist Release mkdir Release
-   copy target\release\ghitadownload-setup.exe Release\ghitadownload_0.0.2.exe
+   cargo test --locked
+   cargo fmt --check
+   cmd /c build_installer.bat
    ```
-3. Chạy file `Release/ghitadownload_0.0.2.exe` vừa tạo để cài đặt vào hệ thống.
+3. Kiểm tra artifact và SHA-256 nếu cần chạy lại riêng bước xác minh:
+   ```powershell
+   powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_release.ps1
+   ```
+4. Chạy file `Release\ghitadownload_0.0.3-beta.exe` vừa tạo để cài đặt vào hệ thống.
 
 ---
 
@@ -76,7 +82,7 @@ Sau khi đã cài đặt, bạn có thể tải nhạc và video trực tiếp v
    ```powershell
    ghita
    ```
-4. Giao diện điều khiển Ghita sẽ mở ra ngay lập tức! Các bài hát và video tải về sẽ được lưu ngay tại chính thư mục bạn vừa mở.
+4. Giao diện điều khiển Ghita sẽ mở ngay. Lần chạy đầu tiên dùng thư mục Nhạc/Tải xuống của hệ thống hoặc thư mục đã lưu trong `ghita_config.json`; các lần sau dùng thư mục đã chọn. Thay đổi được lưu bằng ghi tạm rồi thay thế nguyên tử, không ghi đè nếu ghi cấu hình thất bại.
 
 ### Các thao tác chính trong giao diện Terminal
 
@@ -118,7 +124,7 @@ ghitadownload --file links.txt --format wav --quality 16bit44k --output "D:\Nhac
 ghitadownload --link "https://soundcloud.com/..." --format original --output "D:\Nhac"
 ghitadownload --link "https://youtu.be/..." --format video --resolution 1080 --output "D:\Video"
 
-# Cập nhật yt-dlp lên phiên bản mới nhất từ GitHub
+# Cập nhật yt-dlp từ nguồn bất biến đã pin; có thể đặt URL và SHA-256 riêng qua GHITA_YTDLP_SOURCE_URL/GHITA_YTDLP_SHA256
 ghitadownload --update-ytdlp
 
 # Đổi số bài tải song song (mặc định 3)
@@ -141,9 +147,9 @@ ghitadownload --retry-failed --output "D:\Nhac"
 | `--keep-accents` | Giữ nguyên dấu tiếng Việt Unicode thay vì chuyển đổi sang tên tệp ASCII không dấu an toàn. |
 | `--concurrency <N>` | Số bài tải song song (mặc định 3). |
 | `--retry-failed` | Đọc `failed_tasks.json` trong `--output` và tải lại các bài lỗi. |
-| `--update-ytdlp` (alias `--update-tools`) | Tải và cập nhật bản `yt-dlp` mới nhất từ GitHub Releases. |
+| `--update-ytdlp` (alias `--update-tools`) | Tải yt-dlp từ URL bất biến đã pin `2026.08.19`, kiểm tra SHA-256/PE/version rồi mới thay thế. Nguồn và hash khác phải được đặt qua `GHITA_YTDLP_SOURCE_URL` và `GHITA_YTDLP_SHA256`. |
 
-Ở chế độ headless, ứng dụng trả **mã thoát `0`** khi tất cả bài thành công và **`1`** khi còn bài lỗi (đã được ghi vào `failed_tasks.json` để thử lại).
+Headless không mở hộp thoại và không tự cài FFmpeg. Cần có `yt-dlp` và FFmpeg hợp lệ trước khi chạy; lỗi tham số, xung đột thao tác, định dạng/chất lượng không tương thích, độ phân giải ngoài `1080`, `720`, `480`, `best`, `--concurrency 0`, hoặc thiếu dependency đều trả mã thoát khác `0`. `--output` dùng thư mục đã lưu nếu không được chỉ định.
 
 ---
 
@@ -151,11 +157,12 @@ ghitadownload --retry-failed --output "D:\Nhac"
 
 Khi không còn nhu cầu sử dụng, bạn có thể gỡ cài đặt sạch sẽ khỏi hệ thống:
 - **Cách 1:** Mở thư mục cài đặt `%LOCALAPPDATA%\GhitaDownload` và nhấp đúp vào **`uninstall.bat`**.
-- **Cách 2:** Chạy lệnh từ terminal:
+- **Cách 2:** Chạy lệnh từ terminal; trình cài đặt đọc thư mục tùy chỉnh đã lưu, hoặc truyền rõ đường dẫn:
   ```powershell
-  Release\ghitadownload_0.0.2.exe --uninstall
+  Release\ghitadownload_0.0.3-beta.exe --uninstall
+  Release\ghitadownload_0.0.3-beta.exe --uninstall --install-dir "D:\Apps\GhitaDownload"
   ```
-Trình gỡ cài đặt sẽ tự động dọn dẹp thư mục và xóa đường dẫn khỏi biến môi trường `PATH`.
+Trình gỡ cài đặt chỉ xóa các tệp Ghita/yt-dlp/FFmpeg đã biết và thư mục rỗng; không dùng xóa đệ quy. PATH người dùng chỉ được ghi sau khi đọc thành công.
 
 ---
 
@@ -163,5 +170,7 @@ Trình gỡ cài đặt sẽ tự động dọn dẹp thư mục và xóa đư�
 
 Chạy toàn bộ test suite để kiểm tra tính năng và tính toàn vẹn:
 ```powershell
-cargo test
+cargo test --locked
 ```
+
+`build_installer.bat` chỉ phát hành từ artifact tạm đã vượt kiểm tra Windows PE, có bằng chứng version nhúng `0.0.3-beta`, có tên payload và không chứa placeholder `NO_EMBED`. Trước khi build, script xác minh `bin\\yt-dlp.exe` theo manifest `release/yt-dlp.json` và SHA-256. SHA-256 artifact được in ra khi xác minh; verifier kiểm tra bằng chứng nội tuyến, không phải chữ ký nhà phát hành. Artifact cũ trong `Release/` không bị thay thế nếu bước này thất bại.

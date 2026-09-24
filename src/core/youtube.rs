@@ -1,4 +1,5 @@
 use anyhow::{anyhow, Result};
+use serde_json::Value;
 use std::path::Path;
 use std::process::Command;
 
@@ -18,6 +19,54 @@ pub struct YouTubeClient<'a> {
     has_node: bool,
 }
 
+fn metadata_from_json(
+    value: &Value,
+    platform_name: &str,
+    direct_url: Option<String>,
+) -> Result<YouTubeTrackMeta> {
+    let id = value["id"]
+        .as_str()
+        .map(str::to_string)
+        .or_else(|| value["id"].as_i64().map(|n| n.to_string()))
+        .or_else(|| value["id"].as_u64().map(|n| n.to_string()))
+        .filter(|id| !id.trim().is_empty())
+        .or_else(|| direct_url.as_ref().cloned())
+        .unwrap_or_else(|| "media".to_string());
+    let title = value["title"]
+        .as_str()
+        .or_else(|| value["track"].as_str())
+        .or_else(|| value["description"].as_str())
+        .map(str::trim)
+        .filter(|title| !title.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("{} Audio", platform_name));
+    let uploader = value["uploader"]
+        .as_str()
+        .or_else(|| value["channel"].as_str())
+        .or_else(|| value["creator"].as_str())
+        .or_else(|| value["artist"].as_str())
+        .map(str::trim)
+        .filter(|uploader| !uploader.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| platform_name.to_string());
+    let thumbnail_url = value["thumbnail"]
+        .as_str()
+        .filter(|thumbnail| !thumbnail.trim().is_empty())
+        .map(str::to_string);
+    let duration_secs = value["duration"].as_f64();
+    let direct_url =
+        direct_url.unwrap_or_else(|| format!("https://www.youtube.com/watch?v={}", id));
+
+    Ok(YouTubeTrackMeta {
+        id,
+        title,
+        uploader,
+        thumbnail_url,
+        duration_secs,
+        direct_url,
+    })
+}
+
 impl<'a> YouTubeClient<'a> {
     pub fn new(ytdlp_path: &'a Path, has_node: bool) -> Self {
         Self {
@@ -26,7 +75,7 @@ impl<'a> YouTubeClient<'a> {
         }
     }
 
-    pub fn fetch_video_info(&self, url_or_query: &str) -> Result<YouTubeTrackMeta> {
+    fn configure_command(&self, url_or_query: &str, socket_timeout: &str) -> Command {
         let mut cmd = Command::new(self.ytdlp_path);
         if self.has_node {
             cmd.arg("--js-runtimes").arg("node");
@@ -34,110 +83,42 @@ impl<'a> YouTubeClient<'a> {
         cmd.arg("--no-playlist")
             .arg("--no-warnings")
             .arg("--socket-timeout")
-            .arg("10")
+            .arg(socket_timeout)
             .arg("--extractor-args")
             .arg("youtube:player_client=android,web")
-            .arg("--print")
-            .arg("%(id)s###%(title)s###%(uploader)s###%(thumbnail)s###%(duration)s")
+            .arg("--user-agent")
+            .arg("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36")
+            .arg("--dump-single-json")
             .arg(url_or_query);
+        cmd
+    }
 
-        let output = cmd.output()?;
+    pub fn fetch_video_info(&self, url_or_query: &str) -> Result<YouTubeTrackMeta> {
+        let output = self
+            .configure_command(url_or_query, "10")
+            .output()
+            .map_err(|error| anyhow!("Không thể chạy yt-dlp: {error}"))?;
         if !output.status.success() {
             let err = String::from_utf8_lossy(&output.stderr);
             return Err(anyhow!("Lỗi khi lấy thông tin YouTube: {}", err));
         }
-
-        let out_str = String::from_utf8_lossy(&output.stdout);
-        let line = out_str
-            .lines()
-            .next()
-            .ok_or_else(|| anyhow!("Không nhận được phản hồi từ YouTube"))?;
-        let parts: Vec<&str> = line.split("###").collect();
-
-        if parts.len() < 3 {
-            return Err(anyhow!("Định dạng metadata không hợp lệ"));
-        }
-
-        let id = parts[0].trim().to_string();
-        let title = parts[1].trim().to_string();
-        let uploader = parts[2].trim().to_string();
-        let thumbnail_url = parts
-            .get(3)
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty());
-        let duration_secs = parts
-            .get(4)
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty() && *s != "NA")
-            .and_then(|s| s.parse::<f64>().ok());
-        let direct_url = format!("https://www.youtube.com/watch?v={}", id);
-
-        Ok(YouTubeTrackMeta {
-            id,
-            title,
-            uploader,
-            thumbnail_url,
-            duration_secs,
-            direct_url,
-        })
+        let value: Value = serde_json::from_slice(&output.stdout)
+            .map_err(|error| anyhow!("JSON metadata YouTube không hợp lệ: {error}"))?;
+        metadata_from_json(&value, "YouTube", None)
     }
 
     pub fn fetch_media_info(&self, url: &str, platform_name: &str) -> Result<YouTubeTrackMeta> {
-        let mut cmd = Command::new(self.ytdlp_path);
-        if self.has_node {
-            cmd.arg("--js-runtimes").arg("node");
-        }
-        cmd.arg("--no-playlist")
-            .arg("--no-warnings")
-            .arg("--socket-timeout").arg("12")
-            .arg("--user-agent").arg("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36")
-            .arg("--print")
-            .arg("%(id)s###%(title)s###%(uploader)s###%(thumbnail)s")
-            .arg(url);
-
-        let output = cmd.output()?;
+        let mut cmd = self.configure_command(url, "12");
+        let output = cmd
+            .output()
+            .map_err(|error| anyhow!("Không thể chạy yt-dlp: {error}"))?;
         if !output.status.success() {
             let err = String::from_utf8_lossy(&output.stderr);
             return Err(anyhow!("Lỗi khi lấy thông tin {}: {}", platform_name, err));
         }
-
-        let out_str = String::from_utf8_lossy(&output.stdout);
-        let line = out_str
-            .lines()
-            .next()
-            .ok_or_else(|| anyhow!("Không nhận được phản hồi từ {}", platform_name))?;
-        let parts: Vec<&str> = line.split("###").collect();
-
-        if parts.is_empty() {
-            return Err(anyhow!("Định dạng metadata không hợp lệ"));
-        }
-
-        let id = parts[0].trim().to_string();
-        let raw_title = parts.get(1).map(|s| s.trim()).unwrap_or("");
-        let title = if !raw_title.is_empty() {
-            raw_title.to_string()
-        } else {
-            format!("{} Audio", platform_name)
-        };
-        let raw_uploader = parts.get(2).map(|s| s.trim()).unwrap_or("");
-        let uploader = if !raw_uploader.is_empty() {
-            raw_uploader.to_string()
-        } else {
-            platform_name.to_string()
-        };
-        let thumbnail_url = parts
-            .get(3)
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty());
-
-        Ok(YouTubeTrackMeta {
-            id,
-            title,
-            uploader,
-            thumbnail_url,
-            duration_secs: None,
-            direct_url: url.to_string(),
-        })
+        let value: Value = serde_json::from_slice(&output.stdout)
+            .map_err(|error| anyhow!("JSON metadata {} không hợp lệ: {error}", platform_name))?;
+        metadata_from_json(&value, platform_name, Some(url.to_string()))
     }
 
     pub fn extract_playlist_items(&self, playlist_url: &str) -> Result<Vec<YouTubeTrackMeta>> {
@@ -151,42 +132,30 @@ impl<'a> YouTubeClient<'a> {
             .arg("15")
             .arg("--extractor-args")
             .arg("youtube:player_client=android,web")
-            .arg("--print")
-            .arg("%(id)s###%(title)s###%(uploader)s")
+            .arg("--user-agent")
+            .arg("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36")
+            .arg("--dump-single-json")
             .arg(playlist_url);
-
-        let output = cmd.output()?;
+        let output = cmd
+            .output()
+            .map_err(|error| anyhow!("Không thể chạy yt-dlp: {error}"))?;
         if !output.status.success() {
             let err = String::from_utf8_lossy(&output.stderr);
             return Err(anyhow!("Lỗi khi lấy danh sách Playlist YouTube: {}", err));
         }
+        let value: Value = serde_json::from_slice(&output.stdout)
+            .map_err(|error| anyhow!("JSON playlist YouTube không hợp lệ: {error}"))?;
+        let entries = value["entries"]
+            .as_array()
+            .ok_or_else(|| anyhow!("Dữ liệu playlist YouTube không có danh sách track"))?;
 
-        let out_str = String::from_utf8_lossy(&output.stdout);
-        let mut items = Vec::new();
-
-        for line in out_str.lines() {
-            let trimmed = line.trim();
-            if trimmed.is_empty() {
-                continue;
-            }
-            let parts: Vec<&str> = trimmed.split("###").collect();
-            if parts.len() >= 2 {
-                let id = parts[0].trim().to_string();
-                let title = parts[1].trim().to_string();
-                let uploader = parts.get(2).unwrap_or(&"YouTube").trim().to_string();
-                let direct_url = format!("https://www.youtube.com/watch?v={}", id);
-
-                items.push(YouTubeTrackMeta {
-                    id,
-                    title,
-                    uploader,
-                    thumbnail_url: None,
-                    duration_secs: None,
-                    direct_url,
-                });
-            }
+        let mut items = Vec::with_capacity(entries.len());
+        for entry in entries {
+            items.push(metadata_from_json(entry, "YouTube", None)?);
         }
-
+        if items.is_empty() {
+            return Err(anyhow!("Playlist YouTube không có track"));
+        }
         Ok(items)
     }
 }

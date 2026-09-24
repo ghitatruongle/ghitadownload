@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use id3::frame::{Picture, PictureType};
 use id3::{Tag, TagLike, Version};
 use reqwest::Client;
@@ -40,7 +40,14 @@ impl Tagger {
     }
 
     pub async fn tag_mp3(&self, file_path: &Path, meta: &AudioMetadata) -> Result<()> {
-        let mut tag = Tag::read_from_path(file_path).unwrap_or_else(|_| Tag::new());
+        const MAX_COVER_BYTES: usize = 10 * 1024 * 1024;
+        let mut tag = Tag::read_from_path(file_path).map_err(|e| {
+            anyhow!(
+                "Không thể đọc metadata MP3 tại {}: {}",
+                file_path.display(),
+                e
+            )
+        })?;
 
         tag.set_title(&meta.title);
         tag.set_artist(meta.artists.join(", "));
@@ -69,27 +76,55 @@ impl Tagger {
                 raw_cover_url.clone()
             };
 
-            if let Ok(resp) = self.http_client.get(&normalized_url).send().await {
-                if let Ok(bytes) = resp.bytes().await {
-                    if !bytes.is_empty() {
-                        let mime_type = if bytes.starts_with(&[0x89, 0x50, 0x4E, 0x47]) {
-                            "image/png".to_string()
-                        } else {
-                            "image/jpeg".to_string()
-                        };
-
-                        tag.add_frame(Picture {
-                            mime_type,
-                            picture_type: PictureType::CoverFront,
-                            description: "Cover Art".to_string(),
-                            data: bytes.to_vec(),
-                        });
-                    }
+            let response = self
+                .http_client
+                .get(&normalized_url)
+                .send()
+                .await
+                .map_err(|e| anyhow!("Không thể tải ảnh bìa: {}", e))?;
+            if !response.status().is_success() {
+                return Err(anyhow!(
+                    "Tải ảnh bìa thất bại với HTTP {}",
+                    response.status()
+                ));
+            }
+            if let Some(length) = response.content_length() {
+                if length > MAX_COVER_BYTES as u64 {
+                    return Err(anyhow!(
+                        "Ảnh bìa vượt quá giới hạn {} byte",
+                        MAX_COVER_BYTES
+                    ));
                 }
             }
+            let bytes = response
+                .bytes()
+                .await
+                .map_err(|e| anyhow!("Không thể đọc ảnh bìa: {}", e))?;
+            if bytes.is_empty() || bytes.len() > MAX_COVER_BYTES {
+                return Err(anyhow!("Ảnh bìa rỗng hoặc quá lớn"));
+            }
+            let mime_type = detect_image_mime(&bytes)
+                .ok_or_else(|| anyhow!("Dữ liệu ảnh bìa không phải PNG hoặc JPEG hợp lệ"))?;
+
+            tag.add_frame(Picture {
+                mime_type,
+                picture_type: PictureType::CoverFront,
+                description: "Cover Art".to_string(),
+                data: bytes.to_vec(),
+            });
         }
 
         tag.write_to_path(file_path, Version::Id3v24)?;
         Ok(())
+    }
+}
+
+fn detect_image_mime(bytes: &[u8]) -> Option<String> {
+    if bytes.starts_with(&[0x89, 0x50, 0x4E, 0x47]) {
+        Some("image/png".to_string())
+    } else if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        Some("image/jpeg".to_string())
+    } else {
+        None
     }
 }

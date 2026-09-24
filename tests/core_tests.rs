@@ -11,9 +11,27 @@ fn test_url_parser_platforms() {
         UrlType::SpotifyTrack("4cOdK2wGLETKBW3PvgPWqT".to_string())
     );
 
+    let sp_track_intl = "https://open.spotify.com/intl-vi/track/4cOdK2wGLETKBW3PvgPWqT?si=xyz";
+    assert_eq!(
+        PlatformParser::parse(sp_track_intl),
+        UrlType::SpotifyTrack("4cOdK2wGLETKBW3PvgPWqT".to_string())
+    );
+
+    let sp_uri = "spotify:track:4cOdK2wGLETKBW3PvgPWqT";
+    assert_eq!(
+        PlatformParser::parse(sp_uri),
+        UrlType::SpotifyTrack("4cOdK2wGLETKBW3PvgPWqT".to_string())
+    );
+
     let sp_album = "https://open.spotify.com/album/1DFixLWuPkv3KT3TnV35m3";
     assert_eq!(
         PlatformParser::parse(sp_album),
+        UrlType::SpotifyAlbum("1DFixLWuPkv3KT3TnV35m3".to_string())
+    );
+
+    let sp_album_intl = "https://open.spotify.com/intl-es/album/1DFixLWuPkv3KT3TnV35m3";
+    assert_eq!(
+        PlatformParser::parse(sp_album_intl),
         UrlType::SpotifyAlbum("1DFixLWuPkv3KT3TnV35m3".to_string())
     );
 
@@ -26,6 +44,18 @@ fn test_url_parser_platforms() {
     let yt_video = "https://www.youtube.com/watch?v=dQw4w9WgXcQ";
     assert_eq!(
         PlatformParser::parse(yt_video),
+        UrlType::YouTubeVideo("https://www.youtube.com/watch?v=dQw4w9WgXcQ".to_string())
+    );
+
+    let yt_live = "https://www.youtube.com/live/dQw4w9WgXcQ";
+    assert_eq!(
+        PlatformParser::parse(yt_live),
+        UrlType::YouTubeVideo("https://www.youtube.com/watch?v=dQw4w9WgXcQ".to_string())
+    );
+
+    let yt_shorts = "https://www.youtube.com/shorts/dQw4w9WgXcQ";
+    assert_eq!(
+        PlatformParser::parse(yt_shorts),
         UrlType::YouTubeVideo("https://www.youtube.com/watch?v=dQw4w9WgXcQ".to_string())
     );
 
@@ -192,6 +222,24 @@ fn test_social_and_suno_parser() {
         UrlType::SunoTrack("4bcf2efc-7a98-4c12-9c16-dc562f1dbd75".to_string())
     );
 
+    let suno_api = "https://studio-api.prod.suno.com/api/clip/3b494117-f372-450e-9c5c-2e48b38e5241";
+    assert_eq!(
+        PlatformParser::parse(suno_api),
+        UrlType::SunoTrack("3b494117-f372-450e-9c5c-2e48b38e5241".to_string())
+    );
+
+    let direct_mp3 = "https://cdn.example.com/track/song.mp3?token=abc";
+    assert_eq!(
+        PlatformParser::parse(direct_mp3),
+        UrlType::DirectMedia("https://cdn.example.com/track/song.mp3?token=abc".to_string())
+    );
+
+    let direct_m4a = "https://d2lwuy8qc234o3.cloudfront.net/1/clip/id.m4a";
+    assert_eq!(
+        PlatformParser::parse(direct_m4a),
+        UrlType::DirectMedia(direct_m4a.to_string())
+    );
+
     let tiktok_url = "https://www.tiktok.com/@user/video/7345678912345678901";
     assert_eq!(
         PlatformParser::parse(tiktok_url),
@@ -225,6 +273,30 @@ fn test_social_and_suno_parser() {
         UrlType::SocialVideo {
             url: threads_url.to_string(),
             platform_name: "Threads".to_string(),
+        }
+    );
+
+    let suno_pl = "https://suno.com/playlist/0b45781a-6415-468f-9a7c-6552bb7f70b7";
+    assert_eq!(
+        PlatformParser::parse(suno_pl),
+        UrlType::SunoPlaylist("0b45781a-6415-468f-9a7c-6552bb7f70b7".to_string())
+    );
+
+    let x_url = "https://x.com/user/status/123456789";
+    assert_eq!(
+        PlatformParser::parse(x_url),
+        UrlType::SocialVideo {
+            url: x_url.to_string(),
+            platform_name: "X".to_string(),
+        }
+    );
+
+    let bilibili_url = "https://www.bilibili.com/video/BV1xx411c7mD";
+    assert_eq!(
+        PlatformParser::parse(bilibili_url),
+        UrlType::SocialVideo {
+            url: bilibili_url.to_string(),
+            platform_name: "Bilibili".to_string(),
         }
     );
 }
@@ -269,10 +341,7 @@ fn test_soundcloud_bandcamp_parser() {
     let cdn_url = "https://cf-scfwmedia.sndcdn.com/a-1234.mp3";
     assert_eq!(
         PlatformParser::parse(cdn_url),
-        UrlType::SocialVideo {
-            url: cdn_url.to_string(),
-            platform_name: "SoundCloud".to_string(),
-        }
+        UrlType::DirectMedia(cdn_url.to_string())
     );
 
     let bc_url = "https://artist.bandcamp.com/track/song-name";
@@ -460,8 +529,8 @@ fn test_ensure_unique_path_reserves_atomically() {
     let _ = std::fs::remove_dir_all(&base);
     std::fs::create_dir_all(&base).unwrap();
 
-    let first = ensure_unique_path(&base, "Same Track", "mp3");
-    let second = ensure_unique_path(&base, "Same Track", "mp3");
+    let first = ensure_unique_path(&base, "Same Track", "mp3").unwrap();
+    let second = ensure_unique_path(&base, "Same Track", "mp3").unwrap();
     assert_ne!(
         first, second,
         "hai lần cấp phát cùng tên phải trả về hai đường dẫn khác nhau"
@@ -473,6 +542,41 @@ fn test_ensure_unique_path_reserves_atomically() {
     assert!(clean_path(Path::new(&first)).exists());
 
     let _ = std::fs::remove_dir_all(&base);
+}
+
+#[test]
+fn test_ensure_unique_path_rejects_extension_traversal() {
+    use ghita_download::utils::file_helper::ensure_unique_path;
+
+    let base = std::env::temp_dir().join("ghita_unique_path_invalid");
+    let _ = std::fs::remove_dir_all(&base);
+    std::fs::create_dir_all(&base).unwrap();
+    assert!(ensure_unique_path(&base, "track", "../mp3").is_err());
+    assert!(ensure_unique_path(&base, "track", "mp3/child").is_err());
+    assert!(ensure_unique_path(&base, "track", "").is_err());
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+#[test]
+fn test_url_parser_rejects_lookalike_hosts_and_malformed_ids() {
+    assert_eq!(
+        PlatformParser::parse("https://open.spotify.com.evil.test/track/4cOdK2wGLETKBW3PvgPWqT"),
+        UrlType::DirectSearch(
+            "https://open.spotify.com.evil.test/track/4cOdK2wGLETKBW3PvgPWqT".to_string()
+        )
+    );
+    assert_eq!(
+        PlatformParser::parse("https://www.youtube.com/watch?v=short"),
+        UrlType::DirectSearch("https://www.youtube.com/watch?v=short".to_string())
+    );
+    assert_eq!(
+        PlatformParser::parse("https://www.youtube.com.evil.test/watch?v=dQw4w9WgXcQ"),
+        UrlType::DirectSearch("https://www.youtube.com.evil.test/watch?v=dQw4w9WgXcQ".to_string())
+    );
+    assert_eq!(
+        PlatformParser::parse("https://youtu.be/dQw4w9WgXcQ/extra"),
+        UrlType::DirectSearch("https://youtu.be/dQw4w9WgXcQ/extra".to_string())
+    );
 }
 
 #[test]
@@ -524,10 +628,7 @@ fn test_audio_quality_file_extension_new_formats() {
 
 #[test]
 fn test_audio_format_default_and_compatible_quality() {
-    assert_eq!(
-        AudioFormat::Mp3.default_quality(),
-        AudioQuality::Mp3_320k
-    );
+    assert_eq!(AudioFormat::Mp3.default_quality(), AudioQuality::Mp3_320k);
     assert_eq!(
         AudioFormat::Wav.default_quality(),
         AudioQuality::Wav_24bit_48k
@@ -536,10 +637,7 @@ fn test_audio_format_default_and_compatible_quality() {
         AudioFormat::Flac.default_quality(),
         AudioQuality::Flac_24bit_96k
     );
-    assert_eq!(
-        AudioFormat::Aac.default_quality(),
-        AudioQuality::Aac_256k
-    );
+    assert_eq!(AudioFormat::Aac.default_quality(), AudioQuality::Aac_256k);
 
     assert!(AudioFormat::Mp3.is_compatible_quality(AudioQuality::Mp3_128k));
     assert!(!AudioFormat::Mp3.is_compatible_quality(AudioQuality::Wav_24bit_48k));

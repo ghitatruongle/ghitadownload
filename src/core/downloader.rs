@@ -39,7 +39,7 @@ impl StreamDownloader {
         let size_re = Regex::new(r"of\s+~?\s*([\d.]+)\s*(Bytes|KiB|MiB|GiB|TiB|kB|KB|MB|GB)")?;
         let intermediate_re = Regex::new(r"\.[fF]\d+\.")?;
 
-        for attempt in 1..=2 {
+        for attempt in 1..=3 {
             let seq = DOWNLOAD_SEQ.fetch_add(1, Ordering::Relaxed);
             let unique_id = format!(
                 "dl_{}_{}_{}_{}",
@@ -81,8 +81,8 @@ impl StreamDownloader {
             cmd.arg("--no-playlist")
                 .arg("--no-warnings")
                 .arg("--socket-timeout").arg("30")
-                .arg("--retries").arg("5")
-                .arg("--fragment-retries").arg("5")
+                .arg("--retries").arg("10")
+                .arg("--fragment-retries").arg("10")
                 .arg("--concurrent-fragments").arg("5")
                 .arg("--buffer-size").arg("64k")
                 .arg("--no-mtime")
@@ -149,22 +149,37 @@ impl StreamDownloader {
             let status = child.wait()?;
 
             if status.success() {
+                let mut candidates = Vec::new();
                 if let Ok(entries) = std::fs::read_dir(temp_dir) {
                     for entry in entries.flatten() {
                         let path = entry.path();
-                        if let Some(file_name) = path.file_name().and_then(|n| n.to_str()) {
-                            if file_name.starts_with(&unique_id)
-                                && !file_name.ends_with(".part")
-                                && !file_name.ends_with(".ytdl")
-                                && !file_name.ends_with(".temp")
-                                && !intermediate_re.is_match(file_name)
-                            {
-                                return Ok(path);
-                            }
+                        let Some(file_name) = path.file_name().and_then(|n| n.to_str()) else {
+                            continue;
+                        };
+                        if !file_name.starts_with(&unique_id)
+                            || file_name.ends_with(".part")
+                            || file_name.ends_with(".ytdl")
+                            || file_name.ends_with(".temp")
+                            || intermediate_re.is_match(file_name)
+                        {
+                            continue;
+                        }
+                        let Ok(metadata) = std::fs::metadata(&path) else {
+                            continue;
+                        };
+                        if metadata.is_file()
+                            && metadata.len() > 0
+                            && path.extension().and_then(|e| e.to_str()).is_some()
+                        {
+                            candidates.push((path, metadata.len()));
                         }
                     }
                 }
-                last_err = "Không tìm thấy tệp hoàn chỉnh sau khi yt-dlp kết thúc".to_string();
+                if let Some((path, _)) = candidates.into_iter().max_by_key(|(_, size)| *size) {
+                    return Ok(path);
+                }
+                last_err =
+                    "Không tìm thấy tệp media hoàn chỉnh sau khi yt-dlp kết thúc".to_string();
             } else {
                 last_err = err_lines.join(" | ");
                 if last_err.trim().is_empty() {

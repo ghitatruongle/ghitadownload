@@ -1,6 +1,6 @@
 [package]
 name = "ghita_download"
-version = "0.0.2"
+version = "0.0.3-beta"
 edition = "2021" 
 
 [[bin]]
@@ -28,3 +28,11 @@ url = "2.5"
 sanitize-filename = "0.5"
 crossterm = "0.25"
 clap = { version = "4", features = ["derive"] }
+sha2 = "0.10"
+aes-gcm = "0.10"
+ctr = "0.9"
+aes = "0.8"
+base64 = "0.22"
+
+[build-dependencies]
+sha2 = "0.10"

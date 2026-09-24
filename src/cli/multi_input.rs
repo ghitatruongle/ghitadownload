@@ -16,6 +16,7 @@ impl MultiLinkInput {
     pub fn prompt() -> Result<Option<Vec<String>>> {
         terminal::enable_raw_mode()?;
         let mut stdout = stdout();
+        let _ = execute!(stdout, event::EnableBracketedPaste);
 
         let mut links: Vec<String> = vec![String::new()];
         let mut current_idx: usize = 0;
@@ -30,6 +31,7 @@ impl MultiLinkInput {
             &mut status_message,
         );
 
+        let _ = execute!(stdout, event::DisableBracketedPaste);
         let _ = terminal::disable_raw_mode();
         let _ = execute!(stdout, cursor::Show);
         println!();
@@ -42,6 +44,58 @@ impl MultiLinkInput {
             Ok(None) => Ok(None),
             Err(e) => Err(e),
         }
+    }
+
+    fn get_clipboard_text() -> Option<String> {
+        #[cfg(windows)]
+        {
+            let output = std::process::Command::new("powershell")
+                .args(["-NoProfile", "-Command", "Get-Clipboard"])
+                .output()
+                .ok()?;
+            if output.status.success() {
+                let text = String::from_utf8_lossy(&output.stdout).to_string();
+                let trimmed = text.trim();
+                if !trimmed.is_empty() {
+                    return Some(trimmed.to_string());
+                }
+            }
+        }
+        None
+    }
+
+    fn handle_paste(
+        links: &mut Vec<String>,
+        current_idx: &mut usize,
+        cursor_char_pos: &mut usize,
+        status_message: &mut Option<String>,
+        pasted: &str,
+    ) {
+        let items: Vec<String> = pasted
+            .lines()
+            .flat_map(|line| line.split(|c| c == ',' || c == ';'))
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .collect();
+        if items.is_empty() {
+            return;
+        }
+        if links[*current_idx].trim().is_empty() {
+            links[*current_idx] = items[0].clone();
+        } else {
+            links.push(items[0].clone());
+            *current_idx = links.len() - 1;
+        }
+        for item in items.iter().skip(1) {
+            links.push(item.clone());
+            *current_idx = links.len() - 1;
+        }
+        *cursor_char_pos = links[*current_idx].chars().count();
+        *status_message = Some(format!(
+            "Đã ghi nhận {} liên kết từ nội dung dán",
+            items.len()
+        ));
     }
 
     fn event_loop(
@@ -64,162 +118,195 @@ impl MultiLinkInput {
             )?;
 
             if event::poll(Duration::from_millis(200))? {
-                if let Event::Key(key_event) = event::read()? {
-                    *status_message = None;
+                match event::read()? {
+                    Event::Paste(text) => {
+                        *status_message = None;
+                        Self::handle_paste(
+                            links,
+                            current_idx,
+                            cursor_char_pos,
+                            status_message,
+                            &text,
+                        );
+                    }
+                    Event::Key(key_event) => {
+                        *status_message = None;
 
-                    match key_event {
-                        KeyEvent {
-                            code: KeyCode::Esc, ..
-                        }
-                        | KeyEvent {
-                            code: KeyCode::Char('c'),
-                            modifiers: KeyModifiers::CONTROL,
-                            ..
-                        } => {
-                            return Ok(None);
-                        }
-
-                        KeyEvent {
-                            code: KeyCode::Down,
-                            ..
-                        } => {
-                            if *current_idx + 1 < links.len() {
-                                *current_idx += 1;
-                                *cursor_char_pos = links[*current_idx].chars().count();
-                            } else if !links[*current_idx].trim().is_empty() {
-                                links.push(String::new());
-                                *current_idx += 1;
-                                *cursor_char_pos = 0;
-                            } else {
-                                *status_message = Some(
-                                    "Dòng hiện tại đang trống. Nhập link rồi nhấn [↓] tiếp."
-                                        .to_string(),
-                                );
+                        match key_event {
+                            KeyEvent {
+                                code: KeyCode::Esc, ..
                             }
-                        }
-
-                        KeyEvent {
-                            code: KeyCode::Up, ..
-                        } => {
-                            if *current_idx > 0 {
-                                *current_idx -= 1;
-                                *cursor_char_pos = links[*current_idx].chars().count();
+                            | KeyEvent {
+                                code: KeyCode::Char('c'),
+                                modifiers: KeyModifiers::CONTROL,
+                                ..
+                            } => {
+                                return Ok(None);
                             }
-                        }
 
-                        KeyEvent {
-                            code: KeyCode::Left,
-                            ..
-                        } => {
-                            if *cursor_char_pos > 0 {
-                                *cursor_char_pos -= 1;
-                            }
-                        }
-
-                        KeyEvent {
-                            code: KeyCode::Right,
-                            ..
-                        } => {
-                            let char_count = links[*current_idx].chars().count();
-                            if *cursor_char_pos < char_count {
-                                *cursor_char_pos += 1;
-                            }
-                        }
-
-                        KeyEvent {
-                            code: KeyCode::Home,
-                            ..
-                        } => {
-                            *cursor_char_pos = 0;
-                        }
-
-                        KeyEvent {
-                            code: KeyCode::End, ..
-                        } => {
-                            *cursor_char_pos = links[*current_idx].chars().count();
-                        }
-
-                        KeyEvent {
-                            code: KeyCode::Backspace,
-                            ..
-                        } => {
-                            if *cursor_char_pos > 0 {
-                                let mut chars: Vec<char> = links[*current_idx].chars().collect();
-                                chars.remove(*cursor_char_pos - 1);
-                                links[*current_idx] = chars.into_iter().collect();
-                                *cursor_char_pos -= 1;
-                            } else if links.len() > 1 && links[*current_idx].is_empty() {
-                                links.remove(*current_idx);
-                                if *current_idx >= links.len() {
-                                    *current_idx = links.len() - 1;
+                            KeyEvent {
+                                code:
+                                    KeyCode::Char('v') | KeyCode::Char('V') | KeyCode::Char('\x16'),
+                                modifiers,
+                                ..
+                            } if modifiers.contains(KeyModifiers::CONTROL) => {
+                                if let Some(clip) = Self::get_clipboard_text() {
+                                    Self::handle_paste(
+                                        links,
+                                        current_idx,
+                                        cursor_char_pos,
+                                        status_message,
+                                        &clip,
+                                    );
                                 }
-                                *cursor_char_pos = links[*current_idx].chars().count();
                             }
-                        }
 
-                        KeyEvent {
-                            code: KeyCode::Delete,
-                            ..
-                        } => {
-                            let mut chars: Vec<char> = links[*current_idx].chars().collect();
-                            if *cursor_char_pos < chars.len() {
-                                chars.remove(*cursor_char_pos);
-                                links[*current_idx] = chars.into_iter().collect();
-                            }
-                        }
-
-                        KeyEvent {
-                            code: KeyCode::Enter,
-                            ..
-                        } => {
-                            let has_more_buffered = event::poll(Duration::from_millis(5))?;
-                            if has_more_buffered {
+                            KeyEvent {
+                                code: KeyCode::Down,
+                                ..
+                            } => {
                                 if *current_idx + 1 < links.len() {
                                     *current_idx += 1;
                                     *cursor_char_pos = links[*current_idx].chars().count();
-                                } else {
+                                } else if !links[*current_idx].trim().is_empty() {
                                     links.push(String::new());
                                     *current_idx += 1;
                                     *cursor_char_pos = 0;
-                                }
-                            } else {
-                                let valid_links: Vec<String> = links
-                                    .iter()
-                                    .map(|s| s.trim().to_string())
-                                    .filter(|s| !s.is_empty())
-                                    .collect();
-
-                                if valid_links.is_empty() {
-                                    *status_message = Some(
-                                        "⚠ Vui lòng nhập ít nhất 1 liên kết hợp lệ!".to_string(),
-                                    );
                                 } else {
-                                    return Ok(Some(valid_links));
+                                    *status_message = Some(
+                                        "Dòng hiện tại đang trống. Nhập link rồi nhấn [↓] tiếp."
+                                            .to_string(),
+                                    );
                                 }
                             }
-                        }
 
-                        KeyEvent {
-                            code: KeyCode::Char(c),
-                            modifiers,
-                            ..
-                        } if modifiers.is_empty() || modifiers == KeyModifiers::SHIFT => {
-                            if c == '\n' || c == '\r' {
-                                links.push(String::new());
-                                *current_idx += 1;
-                                *cursor_char_pos = 0;
-                            } else {
-                                let mut chars: Vec<char> = links[*current_idx].chars().collect();
-                                if *cursor_char_pos <= chars.len() {
-                                    chars.insert(*cursor_char_pos, c);
-                                    links[*current_idx] = chars.into_iter().collect();
+                            KeyEvent {
+                                code: KeyCode::Up, ..
+                            } => {
+                                if *current_idx > 0 {
+                                    *current_idx -= 1;
+                                    *cursor_char_pos = links[*current_idx].chars().count();
+                                }
+                            }
+
+                            KeyEvent {
+                                code: KeyCode::Left,
+                                ..
+                            } => {
+                                if *cursor_char_pos > 0 {
+                                    *cursor_char_pos -= 1;
+                                }
+                            }
+
+                            KeyEvent {
+                                code: KeyCode::Right,
+                                ..
+                            } => {
+                                let char_count = links[*current_idx].chars().count();
+                                if *cursor_char_pos < char_count {
                                     *cursor_char_pos += 1;
                                 }
                             }
-                        }
 
-                        _ => {}
+                            KeyEvent {
+                                code: KeyCode::Home,
+                                ..
+                            } => {
+                                *cursor_char_pos = 0;
+                            }
+
+                            KeyEvent {
+                                code: KeyCode::End, ..
+                            } => {
+                                *cursor_char_pos = links[*current_idx].chars().count();
+                            }
+
+                            KeyEvent {
+                                code: KeyCode::Backspace,
+                                ..
+                            } => {
+                                if *cursor_char_pos > 0 {
+                                    let mut chars: Vec<char> =
+                                        links[*current_idx].chars().collect();
+                                    chars.remove(*cursor_char_pos - 1);
+                                    links[*current_idx] = chars.into_iter().collect();
+                                    *cursor_char_pos -= 1;
+                                } else if links.len() > 1 && links[*current_idx].is_empty() {
+                                    links.remove(*current_idx);
+                                    if *current_idx >= links.len() {
+                                        *current_idx = links.len() - 1;
+                                    }
+                                    *cursor_char_pos = links[*current_idx].chars().count();
+                                }
+                            }
+
+                            KeyEvent {
+                                code: KeyCode::Delete,
+                                ..
+                            } => {
+                                let mut chars: Vec<char> = links[*current_idx].chars().collect();
+                                if *cursor_char_pos < chars.len() {
+                                    chars.remove(*cursor_char_pos);
+                                    links[*current_idx] = chars.into_iter().collect();
+                                }
+                            }
+
+                            KeyEvent {
+                                code: KeyCode::Enter,
+                                ..
+                            } => {
+                                let has_more_buffered = event::poll(Duration::from_millis(5))?;
+                                if has_more_buffered {
+                                    if *current_idx + 1 < links.len() {
+                                        *current_idx += 1;
+                                        *cursor_char_pos = links[*current_idx].chars().count();
+                                    } else {
+                                        links.push(String::new());
+                                        *current_idx += 1;
+                                        *cursor_char_pos = 0;
+                                    }
+                                } else {
+                                    let valid_links: Vec<String> = links
+                                        .iter()
+                                        .map(|s| s.trim().to_string())
+                                        .filter(|s| !s.is_empty())
+                                        .collect();
+
+                                    if valid_links.is_empty() {
+                                        *status_message = Some(
+                                            "⚠ Vui lòng nhập ít nhất 1 liên kết hợp lệ!"
+                                                .to_string(),
+                                        );
+                                    } else {
+                                        return Ok(Some(valid_links));
+                                    }
+                                }
+                            }
+
+                            KeyEvent {
+                                code: KeyCode::Char(c),
+                                modifiers,
+                                ..
+                            } if modifiers.is_empty() || modifiers == KeyModifiers::SHIFT => {
+                                if c == '\n' || c == '\r' {
+                                    links.push(String::new());
+                                    *current_idx += 1;
+                                    *cursor_char_pos = 0;
+                                } else {
+                                    let mut chars: Vec<char> =
+                                        links[*current_idx].chars().collect();
+                                    if *cursor_char_pos <= chars.len() {
+                                        chars.insert(*cursor_char_pos, c);
+                                        links[*current_idx] = chars.into_iter().collect();
+                                        *cursor_char_pos += 1;
+                                    }
+                                }
+                            }
+
+                            _ => {}
+                        }
                     }
+                    _ => {}
                 }
             }
         }
@@ -234,7 +321,8 @@ impl MultiLinkInput {
         last_rendered_lines: u16,
     ) -> Result<u16> {
         let (term_cols, _) = terminal::size().unwrap_or((80, 24));
-        let max_content_width = (term_cols as usize).saturating_sub(22).max(20);
+        let banner_width = (term_cols as usize).clamp(40, 80);
+        let max_content_width = banner_width.saturating_sub(18).max(20);
 
         if last_rendered_lines > 0 {
             execute!(
@@ -247,36 +335,52 @@ impl MultiLinkInput {
 
         let mut lines_drawn: u16 = 0;
 
-        let header_border = "═".repeat(term_cols.saturating_sub(2) as usize);
-        println!("╔{}╗", header_border);
+        let border_len = banner_width.saturating_sub(2);
+        let header_border = "═".repeat(border_len);
+        let title_raw = "NHẬP DANH SÁCH LIÊN KẾT (HỖ TRỢ NHIỀU LIÊN KẾT LIÊN TIẾP)";
+        let title_clean = if title_raw.chars().count() > border_len.saturating_sub(2) {
+            title_raw
+                .chars()
+                .take(border_len.saturating_sub(5))
+                .collect::<String>()
+                + "..."
+        } else {
+            title_raw.to_string()
+        };
+        let pad_total = border_len
+            .saturating_sub(2)
+            .saturating_sub(title_clean.chars().count());
+        let pad_left = pad_total / 2;
+        let pad_right = pad_total - pad_left;
+
+        println!("╔{}╗", header_border.cyan());
         println!(
-            "║ {:<width$} ║",
-            "NHẬP DANH SÁCH LIÊN KẾT (HỖ TRỢ NHIỀU LIÊN KẾT LIÊN TIẾP)"
-                .cyan()
-                .bold(),
-            width = term_cols.saturating_sub(4) as usize
+            "║ {}{}{} ║",
+            " ".repeat(pad_left),
+            title_clean.cyan().bold(),
+            " ".repeat(pad_right)
         );
-        println!("╚{}╝", header_border);
+        println!("╚{}╝", header_border.cyan());
         println!(
-            " {}",
+            "  {}",
             "• Nhập link rồi ấn [Mũi tên XUỐNG ↓] để nhập liên kết thứ 2, thứ 3...".yellow()
         );
         println!(
-            " {}",
+            "  {}",
             "• Dùng [↑] và [↓] để di chuyển giữa các dòng | [Backspace] để xóa dòng trống"
                 .bright_black()
         );
         println!(
-            " {}",
+            "  {}",
             "• Hỗ trợ dán (Ctrl+V) hàng loạt hoặc nhập file .txt (ví dụ: links.txt)".bright_black()
         );
         println!(
-            " {}",
+            "  {}",
             "• Nhấn [ENTER] khi hoàn tất để bắt đầu tải | [ESC] để quay lại"
                 .green()
                 .bold()
         );
-        println!("{}", "-".repeat(term_cols as usize));
+        println!("{}", "─".repeat(banner_width).bright_black());
         lines_drawn += 8;
 
         let mut cursor_row_offset = 0;
@@ -309,19 +413,23 @@ impl MultiLinkInput {
                 (format!("{}...", slice), 0)
             };
 
+            let prefix_padded = format!("{:<5}", prefix_num);
             if is_active {
                 cursor_row_offset = lines_drawn;
-                let prompt_prefix = format!(
-                    "  {} {:<5} > ",
+                print!(
+                    "  {} {} > {}",
                     "►".green().bold(),
-                    prefix_num.cyan().bold()
+                    prefix_padded.cyan().bold(),
+                    display_text
                 );
-                print!("{}{}", prompt_prefix, display_text);
                 println!();
-                cursor_col = (11 + display_cursor_pos) as u16;
+                cursor_col = (12 + display_cursor_pos) as u16;
             } else {
-                let prompt_prefix = format!("     {:<5} > ", prefix_num.bright_black());
-                println!("{}{}", prompt_prefix, display_text.bright_white());
+                println!(
+                    "    {} > {}",
+                    prefix_padded.bright_black(),
+                    display_text.bright_white()
+                );
             }
             lines_drawn += 1;
         }
