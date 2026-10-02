@@ -1,5 +1,34 @@
 # Changelog
 
+## [0.0.3] - 2026-10-01
+
+### Added
+- GitHub Actions CI running format check, clippy with warnings as errors, and the locked test suite on pushes and pull requests targeting `main`.
+- Tag-driven release workflow that validates the `v*` tag against the package version, downloads the pinned yt-dlp payload by SHA-256, builds and verifies the installer, and publishes it to GitHub Releases.
+- Platform parser regression tests covering `youtu.be`, `/embed/` and `/v/` paths, YouTube Music playlists, Spotify URI album/playlist variants, uppercase and extended direct-media extensions, Suno alternate hosts, `fb.watch`, empty input, and playlist classification.
+- Tagger regression tests covering ID3 field round-trip, cover-less tagging without network access, and missing-file rejection.
+- Batch regression tests covering empty-queue execution and corrupt or wrong-shape retry queue JSON.
+
+### Changed
+- Split the 1,010-line batch module into `batch/mod.rs`, `batch/resolve.rs`, `batch/task.rs`, and `batch/execute.rs` without changing the public API or behavior.
+- Added clippy with warnings as errors to the `build_installer.bat` release gate alongside format and test checks.
+- Made `scripts/verify_release.ps1` version-agnostic; the embedded version evidence is still checked against the version read from Cargo.toml.
+- The installer skips its final pause when `GHITA_CI` is set so automated environments can run it unattended.
+- Promoted the release channel from `0.0.3-beta` to stable `0.0.3`.
+
+### Fixed
+- Hoisted the Suno UUID regex out of the per-download verification loop and replaced manual character comparisons flagged by clippy.
+- Per-task and resolve-stage logs are now always printed when the output is piped or redirected (headless, CI, log files); previously indicatif dropped them on hidden draw targets, contradicting the headless logging guarantee.
+- Downloading a silent, video-only source in an audio format (MP3/WAV/FLAC/AAC) now fails fast with a clear "no audio stream" reason during verification instead of an obscure FFmpeg "no stream" error during transcoding; `--format original` and `--format video` still save such sources.
+
+### Release artifact
+- `Release/ghitadownload_0.0.3.exe`
+- SHA-256: `BF20D08F17B1E37F214B7D037C97832997295CD3942EC3944BAA01C4564F41B2`
+- Verified with `scripts/verify_dependencies.ps1` and `scripts/verify_release.ps1`.
+
+### Compatibility
+- Existing CLI flags, configuration JSON, audio/video format names, and installer arguments remain compatible.
+
 ## [0.0.3-beta] - 2026-09-24
 
 ### Added

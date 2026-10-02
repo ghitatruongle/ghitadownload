@@ -1,0 +1,81 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build-installer:
+    name: Build + verify + publish installer (windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Rust toolchain (rust-toolchain.toml)
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Validate tag against package version
+        env:
+          TAG_NAME: ${{ github.ref_name }}
+        shell: pwsh
+        run: |
+          $versionLine = Select-String -Path "Cargo.toml" -Pattern '^version = "(.+)"$' | Select-Object -First 1
+          if ($null -eq $versionLine) { throw "Cannot read version from Cargo.toml" }
+          $version = $versionLine.Matches[0].Groups[1].Value
+          if ($env:TAG_NAME -ne "v$version") {
+            throw "Tag $($env:TAG_NAME) does not match package version v$version"
+          }
+          "version=$version" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Download pinned yt-dlp
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path "bin" | Out-Null
+          $manifest = Get-Content -LiteralPath "Release/yt-dlp.json" -Raw | ConvertFrom-Json
+          Invoke-WebRequest -Uri $manifest.url -OutFile "bin/yt-dlp.exe"
+          $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath "bin/yt-dlp.exe").Hash.ToLowerInvariant()
+          if ($hash -ne $manifest.sha256.ToLowerInvariant()) {
+            throw "yt-dlp SHA-256 mismatch: expected $($manifest.sha256), got $hash"
+          }
+
+      - name: Verify yt-dlp payload
+        shell: pwsh
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify_dependencies.ps1
+
+      - name: Build installer (fmt + clippy + test + verify inside)
+        env:
+          GHITA_CI: "1"
+        shell: cmd
+        run: build_installer.bat
+
+      - name: Verify published artifact
+        shell: pwsh
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify_release.ps1
+
+      - name: Collect artifact metadata
+        id: meta
+        shell: pwsh
+        run: |
+          $artifact = "Release/ghitadownload_$env:VERSION.exe"
+          if (!(Test-Path -LiteralPath $artifact -PathType Leaf)) { throw "Missing artifact: $artifact" }
+          $sha = (Get-FileHash -Algorithm SHA256 -LiteralPath $artifact).Hash
+          "artifact=$artifact" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "sha256=$sha" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ steps.meta.outputs.artifact }}
+          body: |
+            Ghita Downloader ${{ env.version }}
+
+            - Artifact: `${{ steps.meta.outputs.artifact }}`
+            - SHA-256: `${{ steps.meta.outputs.sha256 }}`
+            - Bundle yt-dlp baseline: `2026.08.19` (SHA-256 pinned in `Release/yt-dlp.json`)
+            - Artifact verified by `scripts/verify_release.ps1`: Windows PE, embedded version and payload-name evidence, no development placeholder.

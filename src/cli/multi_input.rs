@@ -73,7 +73,7 @@ impl MultiLinkInput {
     ) {
         let items: Vec<String> = pasted
             .lines()
-            .flat_map(|line| line.split(|c| c == ',' || c == ';'))
+            .flat_map(|line| line.split([',', ';']))
             .map(str::trim)
             .filter(|s| !s.is_empty())
             .map(str::to_string)
