@@ -7,7 +7,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 const YTDLP_FALLBACK_URL: &str =
     "https://github.com/yt-dlp/yt-dlp/releases/download/2026.08.19/yt-dlp.exe";
 const YTDLP_FALLBACK_SHA256: &str =
-    "f0a2417a49d9dbbc17d76d2bf37192231eec4930e9d68c45c011788a4641b0b9";
+    "66674953fe251b89f4d08c5f0e35e0728679bd67ab3d7d05c0562af101dd3e7a";
 
 pub fn is_valid_windows_pe(path: &Path) -> bool {
     let mut header = [0_u8; 2];

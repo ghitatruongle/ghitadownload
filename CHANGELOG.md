@@ -17,13 +17,14 @@
 - Promoted the release channel from `0.0.3-beta` to stable `0.0.3`.
 
 ### Fixed
+- Aligned the pinned yt-dlp SHA-256 with the official `2026.08.19` release artifact (`66674953fe251b89f4d08c5f0e35e0728679bd67ab3d7d05c0562af101dd3e7a`). The previous pin matched a non-official 108 KB payload while the manifest URL serves the official executable, so CI verification and `--update-ytdlp` would both reject the official file; the bundled payload is now the official executable and all three pins (app constant, manifest, and SHA file) agree.
 - Hoisted the Suno UUID regex out of the per-download verification loop and replaced manual character comparisons flagged by clippy.
 - Per-task and resolve-stage logs are now always printed when the output is piped or redirected (headless, CI, log files); previously indicatif dropped them on hidden draw targets, contradicting the headless logging guarantee.
 - Downloading a silent, video-only source in an audio format (MP3/WAV/FLAC/AAC) now fails fast with a clear "no audio stream" reason during verification instead of an obscure FFmpeg "no stream" error during transcoding; `--format original` and `--format video` still save such sources.
 
 ### Release artifact
 - `Release/ghitadownload_0.0.3.exe`
-- SHA-256: `BF20D08F17B1E37F214B7D037C97832997295CD3942EC3944BAA01C4564F41B2`
+- SHA-256: `6A2376B46EF4C219F105FB2D98F2009EF02521762BDDDC78B3AACAA01DF0F341`
 - Verified with `scripts/verify_dependencies.ps1` and `scripts/verify_release.ps1`.
 
 ### Compatibility
