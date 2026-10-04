@@ -2,7 +2,20 @@ use anyhow::{anyhow, Result};
 use regex::Regex;
 use reqwest::Client;
 use serde_json::Value;
+use std::sync::LazyLock;
 use url::Url;
+
+use crate::utils::http::{shared_client, with_retry};
+
+static NEXT_DATA_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"<script id="__NEXT_DATA__" type="application/json">([^<]+)</script>"#).unwrap()
+});
+static OG_TITLE_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"<meta property="og:title" content="([^"]+)""#).unwrap());
+static OG_DESC_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"<meta property="og:description" content="([^"]+)""#).unwrap());
+static OG_IMG_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"<meta property="og:image" content="([^"]+)""#).unwrap());
 
 fn artists_from_subtitle(subtitle: &str) -> Vec<String> {
     let artist = subtitle
@@ -80,29 +93,30 @@ impl Default for SpotifyClient {
 
 impl SpotifyClient {
     pub fn new() -> Self {
-        let client = Client::builder()
-            .timeout(std::time::Duration::from_secs(20))
-            .connect_timeout(std::time::Duration::from_secs(10))
-            .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-            .build()
-            .unwrap_or_default();
+        let client = shared_client().cloned().unwrap_or_default();
         Self { client }
     }
 
     pub async fn fetch_track(&self, track_id: &str) -> Result<SpotifyTrackMeta> {
         let embed_url = format!("https://open.spotify.com/embed/track/{}", track_id);
-        let resp = self
-            .client
-            .get(&embed_url)
-            .send()
-            .await?
-            .error_for_status()?
-            .text()
-            .await?;
+        let resp = with_retry(|| {
+            let embed_url = embed_url.clone();
+            let client = self.client.clone();
+            async move {
+                Ok::<String, anyhow::Error>(
+                    client
+                        .get(embed_url)
+                        .send()
+                        .await?
+                        .error_for_status()?
+                        .text()
+                        .await?,
+                )
+            }
+        })
+        .await?;
 
-        let re =
-            Regex::new(r#"<script id="__NEXT_DATA__" type="application/json">([^<]+)</script>"#)?;
-        if let Some(caps) = re.captures(&resp) {
+        if let Some(caps) = NEXT_DATA_RE.captures(&resp) {
             let json_str = &caps[1];
             let v: Value = serde_json::from_str(json_str)?;
 
@@ -166,44 +180,34 @@ impl SpotifyClient {
             });
         }
 
-        if let Ok(og_title_re) = Regex::new(r#"<meta property="og:title" content="([^"]+)""#) {
-            if let Some(caps) = og_title_re.captures(&resp) {
-                let full_title = caps[1].to_string();
-                let og_desc_re =
-                    Regex::new(r#"<meta property="og:description" content="([^"]+)""#).ok();
-                let og_img_re = Regex::new(r#"<meta property="og:image" content="([^"]+)""#).ok();
-
-                let mut artist = "Spotify Artist".to_string();
-                if let Some(desc_re) = og_desc_re {
-                    if let Some(desc_caps) = desc_re.captures(&resp) {
-                        let desc = &desc_caps[1];
-                        if let Some(first_part) = desc.split('·').next() {
-                            let a = first_part.trim();
-                            if !a.is_empty() {
-                                artist = a.to_string();
-                            }
-                        }
+        if let Some(caps) = OG_TITLE_RE.captures(&resp) {
+            let full_title = caps[1].to_string();
+            let mut artist = "Spotify Artist".to_string();
+            if let Some(desc_caps) = OG_DESC_RE.captures(&resp) {
+                let desc = &desc_caps[1];
+                if let Some(first_part) = desc.split('·').next() {
+                    let a = first_part.trim();
+                    if !a.is_empty() {
+                        artist = a.to_string();
                     }
                 }
-
-                let cover_url = og_img_re
-                    .and_then(|r| r.captures(&resp))
-                    .map(|c| c[1].to_string());
-
-                let search_query = format!("{} {} official audio", artist, full_title);
-
-                return Ok(SpotifyTrackMeta {
-                    title: full_title.clone(),
-                    artists: vec![artist],
-                    album: full_title,
-                    release_year: None,
-                    duration_ms: None,
-                    cover_url,
-                    search_query,
-                    track_number: None,
-                    total_tracks: None,
-                });
             }
+
+            let cover_url = OG_IMG_RE.captures(&resp).map(|c| c[1].to_string());
+
+            let search_query = format!("{} {} official audio", artist, full_title);
+
+            return Ok(SpotifyTrackMeta {
+                title: full_title.clone(),
+                artists: vec![artist],
+                album: full_title,
+                release_year: None,
+                duration_ms: None,
+                cover_url,
+                search_query,
+                track_number: None,
+                total_tracks: None,
+            });
         }
 
         self.fetch_via_oembed(&format!("https://open.spotify.com/track/{}", track_id))
@@ -215,18 +219,24 @@ impl SpotifyClient {
         album_id: &str,
     ) -> Result<(String, Vec<SpotifyTrackMeta>)> {
         let embed_url = format!("https://open.spotify.com/embed/album/{}", album_id);
-        let resp = self
-            .client
-            .get(&embed_url)
-            .send()
-            .await?
-            .error_for_status()?
-            .text()
-            .await?;
+        let resp = with_retry(|| {
+            let embed_url = embed_url.clone();
+            let client = self.client.clone();
+            async move {
+                Ok::<String, anyhow::Error>(
+                    client
+                        .get(embed_url)
+                        .send()
+                        .await?
+                        .error_for_status()?
+                        .text()
+                        .await?,
+                )
+            }
+        })
+        .await?;
 
-        let re =
-            Regex::new(r#"<script id="__NEXT_DATA__" type="application/json">([^<]+)</script>"#)?;
-        let caps = re
+        let caps = NEXT_DATA_RE
             .captures(&resp)
             .ok_or_else(|| anyhow!("Không thể phân tích dữ liệu Album Spotify"))?;
         let v: Value = serde_json::from_str(&caps[1])?;
@@ -268,18 +278,24 @@ impl SpotifyClient {
         playlist_id: &str,
     ) -> Result<(String, Vec<SpotifyTrackMeta>)> {
         let embed_url = format!("https://open.spotify.com/embed/playlist/{}", playlist_id);
-        let resp = self
-            .client
-            .get(&embed_url)
-            .send()
-            .await?
-            .error_for_status()?
-            .text()
-            .await?;
+        let resp = with_retry(|| {
+            let embed_url = embed_url.clone();
+            let client = self.client.clone();
+            async move {
+                Ok::<String, anyhow::Error>(
+                    client
+                        .get(embed_url)
+                        .send()
+                        .await?
+                        .error_for_status()?
+                        .text()
+                        .await?,
+                )
+            }
+        })
+        .await?;
 
-        let re =
-            Regex::new(r#"<script id="__NEXT_DATA__" type="application/json">([^<]+)</script>"#)?;
-        let caps = re
+        let caps = NEXT_DATA_RE
             .captures(&resp)
             .ok_or_else(|| anyhow!("Không thể phân tích dữ liệu Playlist Spotify"))?;
         let v: Value = serde_json::from_str(&caps[1])?;
@@ -319,14 +335,22 @@ impl SpotifyClient {
     async fn fetch_via_oembed(&self, url: &str) -> Result<SpotifyTrackMeta> {
         let mut endpoint = Url::parse("https://open.spotify.com/oembed")?;
         endpoint.query_pairs_mut().append_pair("url", url);
-        let v: Value = self
-            .client
-            .get(endpoint)
-            .send()
-            .await?
-            .error_for_status()?
-            .json()
-            .await?;
+        let v: Value = with_retry(|| {
+            let endpoint = endpoint.clone();
+            let client = self.client.clone();
+            async move {
+                Ok::<Value, anyhow::Error>(
+                    client
+                        .get(endpoint)
+                        .send()
+                        .await?
+                        .error_for_status()?
+                        .json()
+                        .await?,
+                )
+            }
+        })
+        .await?;
 
         let title = required_text(&v, "title", "oEmbed Spotify")?;
         let artist = v["author_name"]

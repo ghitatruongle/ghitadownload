@@ -173,39 +173,11 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
             temporary.display()
         ));
     }
-    if let Err(error) = replace_file(&temporary, path) {
+    if let Err(error) = ghita_download::utils::fs::replace_file(&temporary, path) {
         let _ = fs::remove_file(&temporary);
         return Err(format!("Không thay thế {}: {error}", path.display()));
     }
     Ok(())
-}
-
-fn replace_file(source: &Path, destination: &Path) -> io::Result<()> {
-    match fs::rename(source, destination) {
-        Ok(()) => Ok(()),
-        Err(_) if destination.exists() => {
-            let backup = destination.with_extension(format!(
-                "{}.{}.bak",
-                std::process::id(),
-                SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_nanos()
-            ));
-            fs::rename(destination, &backup)?;
-            match fs::rename(source, destination) {
-                Ok(()) => {
-                    let _ = fs::remove_file(backup);
-                    Ok(())
-                }
-                Err(error) => {
-                    let _ = fs::rename(&backup, destination);
-                    Err(error)
-                }
-            }
-        }
-        Err(error) => Err(error),
-    }
 }
 
 fn handle_install(default_dir: &Path, args: &SetupArgs) -> Result<(), String> {
@@ -267,7 +239,7 @@ fn handle_install(default_dir: &Path, args: &SetupArgs) -> Result<(), String> {
     write_atomic(&staged_state, persisted.as_bytes())?;
     let uninstall = build_uninstall_script(&install_dir);
     write_atomic(&uninstall_path, uninstall.as_bytes())?;
-    replace_file(&staged_state, &state_path)
+    ghita_download::utils::fs::replace_file(&staged_state, &state_path)
         .map_err(|error| format!("Không lưu đường dẫn cài đặt: {error}"))?;
 
     println!("🔍 Đang kiểm tra công cụ chuyển mã FFmpeg...");

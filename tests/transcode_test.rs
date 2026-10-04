@@ -1,3 +1,4 @@
+use ghita_download::core::cancel::Cancellation;
 use ghita_download::core::config::{AudioFormat, AudioQuality};
 use ghita_download::core::tagger::{AudioMetadata, Tagger};
 use ghita_download::core::transcoder::Transcoder;
@@ -10,6 +11,7 @@ use std::process::Command;
 async fn test_transcode_and_tagging_pipeline() {
     let ffmpeg_path = find_ffmpeg().expect("FFmpeg must be available for testing");
     let transcoder = Transcoder::new(&ffmpeg_path);
+    let cancel = Cancellation::new();
     let tagger = Tagger::new();
 
     let test_dir = PathBuf::from("./target/test_output");
@@ -38,13 +40,16 @@ async fn test_transcode_and_tagging_pipeline() {
     };
 
     let mp3_320_path = test_dir.join("test_320k.mp3");
-    let res = transcoder.transcode(
-        &sample_wav,
-        &mp3_320_path,
-        AudioFormat::Mp3,
-        AudioQuality::Mp3_320k,
-        &meta,
-    );
+    let res = transcoder
+        .transcode(
+            &sample_wav,
+            &mp3_320_path,
+            AudioFormat::Mp3,
+            AudioQuality::Mp3_320k,
+            &meta,
+            cancel.subscribe(),
+        )
+        .await;
     assert!(res.is_ok(), "MP3 320k transcode failed: {:?}", res.err());
     assert!(mp3_320_path.exists());
 
@@ -52,13 +57,16 @@ async fn test_transcode_and_tagging_pipeline() {
     assert!(tag_res.is_ok());
 
     let mp3_64_path = test_dir.join("test_64k.mp3");
-    let res = transcoder.transcode(
-        &sample_wav,
-        &mp3_64_path,
-        AudioFormat::Mp3,
-        AudioQuality::Mp3_64k,
-        &meta,
-    );
+    let res = transcoder
+        .transcode(
+            &sample_wav,
+            &mp3_64_path,
+            AudioFormat::Mp3,
+            AudioQuality::Mp3_64k,
+            &meta,
+            cancel.subscribe(),
+        )
+        .await;
     assert!(res.is_ok(), "MP3 64k transcode failed: {:?}", res.err());
     assert!(mp3_64_path.exists());
 
@@ -72,24 +80,30 @@ async fn test_transcode_and_tagging_pipeline() {
     );
 
     let flac_path = test_dir.join("test_flac.flac");
-    let res = transcoder.transcode(
-        &sample_wav,
-        &flac_path,
-        AudioFormat::Flac,
-        AudioQuality::Flac_24bit_48k,
-        &meta,
-    );
+    let res = transcoder
+        .transcode(
+            &sample_wav,
+            &flac_path,
+            AudioFormat::Flac,
+            AudioQuality::Flac_24bit_48k,
+            &meta,
+            cancel.subscribe(),
+        )
+        .await;
     assert!(res.is_ok(), "FLAC transcode failed: {:?}", res.err());
     assert!(flac_path.exists());
 
     let flac_96_path = test_dir.join("test_flac_96k.flac");
-    let res_96 = transcoder.transcode(
-        &sample_wav,
-        &flac_96_path,
-        AudioFormat::Flac,
-        AudioQuality::Flac_24bit_96k,
-        &meta,
-    );
+    let res_96 = transcoder
+        .transcode(
+            &sample_wav,
+            &flac_96_path,
+            AudioFormat::Flac,
+            AudioQuality::Flac_24bit_96k,
+            &meta,
+            cancel.subscribe(),
+        )
+        .await;
     assert!(
         res_96.is_ok(),
         "FLAC 96k transcode failed: {:?}",
@@ -98,24 +112,30 @@ async fn test_transcode_and_tagging_pipeline() {
     assert!(flac_96_path.exists());
 
     let aac_path = test_dir.join("test_aac.m4a");
-    let res = transcoder.transcode(
-        &sample_wav,
-        &aac_path,
-        AudioFormat::Aac,
-        AudioQuality::Aac_256k,
-        &meta,
-    );
+    let res = transcoder
+        .transcode(
+            &sample_wav,
+            &aac_path,
+            AudioFormat::Aac,
+            AudioQuality::Aac_256k,
+            &meta,
+            cancel.subscribe(),
+        )
+        .await;
     assert!(res.is_ok(), "AAC transcode failed: {:?}", res.err());
     assert!(aac_path.exists());
 
     let aac_320_path = test_dir.join("test_aac_320k.m4a");
-    let res_aac_320 = transcoder.transcode(
-        &sample_wav,
-        &aac_320_path,
-        AudioFormat::Aac,
-        AudioQuality::Aac_320k,
-        &meta,
-    );
+    let res_aac_320 = transcoder
+        .transcode(
+            &sample_wav,
+            &aac_320_path,
+            AudioFormat::Aac,
+            AudioQuality::Aac_320k,
+            &meta,
+            cancel.subscribe(),
+        )
+        .await;
     assert!(
         res_aac_320.is_ok(),
         "AAC 320k transcode failed: {:?}",
@@ -124,24 +144,30 @@ async fn test_transcode_and_tagging_pipeline() {
     assert!(aac_320_path.exists());
 
     let wav_24_path = test_dir.join("test_24bit_48k.wav");
-    let res = transcoder.transcode(
-        &sample_wav,
-        &wav_24_path,
-        AudioFormat::Wav,
-        AudioQuality::Wav_24bit_48k,
-        &meta,
-    );
+    let res = transcoder
+        .transcode(
+            &sample_wav,
+            &wav_24_path,
+            AudioFormat::Wav,
+            AudioQuality::Wav_24bit_48k,
+            &meta,
+            cancel.subscribe(),
+        )
+        .await;
     assert!(res.is_ok(), "WAV 24bit transcode failed: {:?}", res.err());
     assert!(wav_24_path.exists());
 
     let wav_8_path = test_dir.join("test_8bit_11k.wav");
-    let res = transcoder.transcode(
-        &sample_wav,
-        &wav_8_path,
-        AudioFormat::Wav,
-        AudioQuality::Wav_8bit_11k,
-        &meta,
-    );
+    let res = transcoder
+        .transcode(
+            &sample_wav,
+            &wav_8_path,
+            AudioFormat::Wav,
+            AudioQuality::Wav_8bit_11k,
+            &meta,
+            cancel.subscribe(),
+        )
+        .await;
     assert!(res.is_ok(), "WAV 8bit transcode failed: {:?}", res.err());
     assert!(wav_8_path.exists());
 
@@ -155,10 +181,11 @@ async fn test_transcode_and_tagging_pipeline() {
     let _ = std::fs::remove_dir_all(&test_dir);
 }
 
-#[test]
-fn test_remux_copy_preserves_codec_and_duration() {
+#[tokio::test]
+async fn test_remux_copy_preserves_codec_and_duration() {
     let ffmpeg_path = find_ffmpeg().expect("FFmpeg must be available for testing");
     let transcoder = Transcoder::new(&ffmpeg_path);
+    let cancel = Cancellation::new();
 
     let test_dir = PathBuf::from("./target/test_output_remux");
     let _ = std::fs::remove_dir_all(&test_dir);
@@ -187,7 +214,9 @@ fn test_remux_copy_preserves_codec_and_duration() {
     };
 
     let out_wav = test_dir.join("output_remux.wav");
-    let res = transcoder.remux_copy(&sample_wav, &out_wav, &meta);
+    let res = transcoder
+        .remux_copy(&sample_wav, &out_wav, &meta, cancel.subscribe())
+        .await;
     assert!(res.is_ok(), "remux_copy failed: {:?}", res.err());
     assert!(out_wav.exists());
 
@@ -210,17 +239,22 @@ fn test_remux_copy_preserves_codec_and_duration() {
     );
 
     let mp3_path = test_dir.join("remux_to_mp3.mp3");
-    let res_mp3 = transcoder.transcode(
-        &sample_wav,
-        &mp3_path,
-        AudioFormat::Mp3,
-        AudioQuality::Mp3_192k,
-        &meta,
-    );
+    let res_mp3 = transcoder
+        .transcode(
+            &sample_wav,
+            &mp3_path,
+            AudioFormat::Mp3,
+            AudioQuality::Mp3_192k,
+            &meta,
+            cancel.subscribe(),
+        )
+        .await;
     assert!(res_mp3.is_ok(), "MP3 transcode failed: {:?}", res_mp3.err());
 
     let out_mp3 = test_dir.join("remux_mp3_copy.mp3");
-    let res_copy_mp3 = transcoder.remux_copy(&mp3_path, &out_mp3, &meta);
+    let res_copy_mp3 = transcoder
+        .remux_copy(&mp3_path, &out_mp3, &meta, cancel.subscribe())
+        .await;
     assert!(
         res_copy_mp3.is_ok(),
         "remux_copy MP3 failed: {:?}",
@@ -230,6 +264,73 @@ fn test_remux_copy_preserves_codec_and_duration() {
     assert_eq!(mp3_info.codec, "mp3", "Remux MP3 phải giữ codec mp3");
 
     let _ = std::fs::remove_dir_all(&test_dir);
+}
+
+#[test]
+fn test_build_transcode_command_opus() {
+    let meta = AudioMetadata {
+        title: "Opus Track".to_string(),
+        artists: vec!["Opus Artist".to_string()],
+        album: "Opus Album".to_string(),
+        release_year: None,
+        cover_url: None,
+        track_number: None,
+        total_tracks: None,
+    };
+    let cmd = Transcoder::build_transcode_command(
+        Path::new("ffmpeg"),
+        Path::new("in.wav"),
+        Path::new("out.opus"),
+        AudioFormat::Opus,
+        AudioQuality::Opus_128k,
+        &meta,
+    )
+    .expect("opus build phải thành công");
+    let args: Vec<String> = cmd
+        .get_args()
+        .map(|arg| arg.to_string_lossy().to_string())
+        .collect();
+    let joined = args.join(" ");
+    assert!(joined.contains("libopus"), "thiếu libopus: {}", joined);
+    assert!(joined.contains("128k"), "thiếu 128k: {}", joined);
+    assert!(joined.contains("out.opus"));
+
+    for quality in [AudioQuality::Opus_192k, AudioQuality::Opus_96k] {
+        let cmd = Transcoder::build_transcode_command(
+            Path::new("ffmpeg"),
+            Path::new("in.wav"),
+            Path::new("out.opus"),
+            AudioFormat::Opus,
+            quality,
+            &meta,
+        )
+        .unwrap();
+        let joined = cmd
+            .get_args()
+            .map(|arg| arg.to_string_lossy().to_string())
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(joined.contains("libopus"));
+    }
+
+    assert!(Transcoder::build_transcode_command(
+        Path::new("ffmpeg"),
+        Path::new("in.wav"),
+        Path::new("out.opus"),
+        AudioFormat::Opus,
+        AudioQuality::Mp3_320k,
+        &meta,
+    )
+    .is_err());
+    assert!(Transcoder::build_transcode_command(
+        Path::new("ffmpeg"),
+        Path::new("in.wav"),
+        Path::new("out.flac"),
+        AudioFormat::Opus,
+        AudioQuality::Flac_24bit_96k,
+        &meta,
+    )
+    .is_err());
 }
 
 struct QuickProbe {
