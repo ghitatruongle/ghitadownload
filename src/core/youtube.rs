@@ -1,7 +1,9 @@
 use anyhow::{anyhow, Result};
 use serde_json::Value;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
+
+use crate::core::ytdlp::YTDLP_DEFAULT_ARGS;
 
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
@@ -17,6 +19,8 @@ pub struct YouTubeTrackMeta {
 pub struct YouTubeClient<'a> {
     ytdlp_path: &'a Path,
     has_node: bool,
+    cookies_file: Option<&'a PathBuf>,
+    cookies_from_browser: Option<&'a str>,
 }
 
 fn metadata_from_json(
@@ -68,28 +72,46 @@ fn metadata_from_json(
 }
 
 impl<'a> YouTubeClient<'a> {
-    pub fn new(ytdlp_path: &'a Path, has_node: bool) -> Self {
+    pub fn new(
+        ytdlp_path: &'a Path,
+        has_node: bool,
+        cookies_file: Option<&'a PathBuf>,
+        cookies_from_browser: Option<&'a str>,
+    ) -> Self {
         Self {
             ytdlp_path,
             has_node,
+            cookies_file,
+            cookies_from_browser,
+        }
+    }
+
+    fn append_cookie_args(&self, args: &mut Vec<String>) {
+        if let Some(path) = self.cookies_file {
+            args.push("--cookies".to_string());
+            args.push(path.to_string_lossy().into_owned());
+        }
+        if let Some(browser) = self.cookies_from_browser {
+            args.push("--cookies-from-browser".to_string());
+            args.push(browser.to_string());
         }
     }
 
     fn configure_command(&self, url_or_query: &str, socket_timeout: &str) -> Command {
         let mut cmd = Command::new(self.ytdlp_path);
+        let mut args: Vec<String> = Vec::new();
         if self.has_node {
-            cmd.arg("--js-runtimes").arg("node");
+            args.push("--js-runtimes".to_string());
+            args.push("node".to_string());
         }
-        cmd.arg("--no-playlist")
-            .arg("--no-warnings")
-            .arg("--socket-timeout")
-            .arg(socket_timeout)
-            .arg("--extractor-args")
-            .arg("youtube:player_client=android,web")
-            .arg("--user-agent")
-            .arg("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36")
-            .arg("--dump-single-json")
-            .arg(url_or_query);
+        args.push("--no-playlist".to_string());
+        args.push("--socket-timeout".to_string());
+        args.push(socket_timeout.to_string());
+        args.extend(YTDLP_DEFAULT_ARGS.iter().map(|s| s.to_string()));
+        self.append_cookie_args(&mut args);
+        args.push("--dump-single-json".to_string());
+        args.push(url_or_query.to_string());
+        cmd.args(&args);
         cmd
     }
 
@@ -123,19 +145,19 @@ impl<'a> YouTubeClient<'a> {
 
     pub fn extract_playlist_items(&self, playlist_url: &str) -> Result<Vec<YouTubeTrackMeta>> {
         let mut cmd = Command::new(self.ytdlp_path);
+        let mut args: Vec<String> = Vec::new();
         if self.has_node {
-            cmd.arg("--js-runtimes").arg("node");
+            args.push("--js-runtimes".to_string());
+            args.push("node".to_string());
         }
-        cmd.arg("--flat-playlist")
-            .arg("--no-warnings")
-            .arg("--socket-timeout")
-            .arg("15")
-            .arg("--extractor-args")
-            .arg("youtube:player_client=android,web")
-            .arg("--user-agent")
-            .arg("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36")
-            .arg("--dump-single-json")
-            .arg(playlist_url);
+        args.push("--flat-playlist".to_string());
+        args.push("--socket-timeout".to_string());
+        args.push("15".to_string());
+        args.extend(YTDLP_DEFAULT_ARGS.iter().map(|s| s.to_string()));
+        self.append_cookie_args(&mut args);
+        args.push("--dump-single-json".to_string());
+        args.push(playlist_url.to_string());
+        cmd.args(&args);
         let output = cmd
             .output()
             .map_err(|error| anyhow!("Không thể chạy yt-dlp: {error}"))?;

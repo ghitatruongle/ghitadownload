@@ -373,10 +373,7 @@ fn test_audio_format_from_str() {
         AudioFormat::Original
     );
     assert_eq!("m4a".parse::<AudioFormat>().unwrap(), AudioFormat::Original);
-    assert_eq!(
-        "Opus".parse::<AudioFormat>().unwrap(),
-        AudioFormat::Original
-    );
+    assert_eq!("Opus".parse::<AudioFormat>().unwrap(), AudioFormat::Opus);
     assert_eq!("video".parse::<AudioFormat>().unwrap(), AudioFormat::Video);
     assert_eq!("mp4".parse::<AudioFormat>().unwrap(), AudioFormat::Video);
     assert_eq!("flac".parse::<AudioFormat>().unwrap(), AudioFormat::Flac);
@@ -462,6 +459,8 @@ fn test_failed_queue_serde_roundtrip_and_retry() {
         video_resolution: None,
         concurrency: 3,
         keep_accents: false,
+        cookies_file: None,
+        cookies_from_browser: None,
     };
 
     let task = DownloadTask {
@@ -518,6 +517,75 @@ fn test_failed_queue_serde_roundtrip_and_retry() {
     let missing_dir = std::env::temp_dir().join("ghita_failed_queue_missing");
     let _ = std::fs::remove_dir_all(&missing_dir);
     assert!(BatchProcessor::retry_from_file(&missing_dir).is_err());
+}
+
+#[test]
+fn test_write_manifest_parses_and_counts() {
+    use ghita_download::core::batch::DownloadTask;
+    use ghita_download::core::config::DownloadSettings;
+    use ghita_download::core::manifest::write_manifest;
+    use ghita_download::core::tagger::AudioMetadata;
+    use std::path::PathBuf;
+
+    let settings = DownloadSettings {
+        output_dir: PathBuf::from("D:\\Music\\Test"),
+        format: AudioFormat::Mp3,
+        quality: Some(AudioQuality::Mp3_320k),
+        video_resolution: None,
+        concurrency: 3,
+        keep_accents: false,
+        cookies_file: None,
+        cookies_from_browser: None,
+    };
+
+    let mk = |title: &str, src: &str| DownloadTask {
+        display_title: title.to_string(),
+        source_or_search: src.to_string(),
+        fallback_searches: Vec::new(),
+        expected_duration_secs: None,
+        metadata: AudioMetadata {
+            title: title.to_string(),
+            artists: vec!["Artist".to_string()],
+            album: "Album".to_string(),
+            release_year: None,
+            cover_url: None,
+            track_number: None,
+            total_tracks: None,
+        },
+    };
+
+    let ok_task = mk("Ok Track", "https://example.com/ok");
+    let failed_task = mk("Failed Track", "https://example.com/failed");
+    let tasks = vec![ok_task.clone(), failed_task.clone()];
+    let failed = vec![failed_task];
+
+    let tmp_dir = std::env::temp_dir().join("ghita_manifest_test");
+    let _ = std::fs::remove_dir_all(&tmp_dir);
+    std::fs::create_dir_all(&tmp_dir).unwrap();
+
+    let path = write_manifest(&tmp_dir, &tasks, &failed, &settings).unwrap();
+    assert!(path.exists());
+    assert!(path
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .starts_with("ghita_manifest_"));
+
+    let content = std::fs::read_to_string(&path).unwrap();
+    let doc: serde_json::Value = serde_json::from_str(&content).unwrap();
+    assert_eq!(doc["version"], "0.0.4");
+    assert_eq!(doc["success_count"], 1);
+    assert_eq!(doc["failed_count"], 1);
+    assert_eq!(doc["settings"]["concurrency"], 3);
+    assert!(doc["settings"]["format"].as_str().unwrap().contains("MP3"));
+    let results = doc["results"].as_array().unwrap();
+    assert_eq!(results.len(), 2);
+    assert_eq!(results[0]["status"], "ok");
+    assert_eq!(results[0]["task_index"], 0);
+    assert_eq!(results[1]["status"], "failed");
+    assert_eq!(results[1]["url"], "https://example.com/failed");
+
+    let _ = std::fs::remove_dir_all(&tmp_dir);
 }
 
 #[test]
@@ -645,4 +713,154 @@ fn test_audio_format_default_and_compatible_quality() {
     assert!(!AudioFormat::Flac.is_compatible_quality(AudioQuality::Aac_320k));
     assert!(AudioFormat::Aac.is_compatible_quality(AudioQuality::Aac_320k));
     assert!(!AudioFormat::Aac.is_compatible_quality(AudioQuality::Mp3_320k));
+    assert_eq!(AudioFormat::Opus.default_quality(), AudioQuality::Opus_128k);
+    assert!(AudioFormat::Opus.is_compatible_quality(AudioQuality::Opus_192k));
+    assert!(AudioFormat::Opus.is_compatible_quality(AudioQuality::Opus_128k));
+    assert!(AudioFormat::Opus.is_compatible_quality(AudioQuality::Opus_96k));
+    assert!(!AudioFormat::Opus.is_compatible_quality(AudioQuality::Mp3_320k));
+    assert!(!AudioFormat::Opus.is_compatible_quality(AudioQuality::Flac_24bit_96k));
+    assert_eq!(AudioFormat::Opus.file_extension(), "opus");
+}
+
+#[test]
+fn test_opus_format_and_quality_parse() {
+    use std::str::FromStr;
+    assert_eq!(AudioFormat::from_str("opus").unwrap(), AudioFormat::Opus);
+    assert_eq!(
+        AudioQuality::from_str("opus192k").unwrap(),
+        AudioQuality::Opus_192k
+    );
+    assert_eq!(
+        AudioQuality::from_str("opus128k").unwrap(),
+        AudioQuality::Opus_128k
+    );
+    assert_eq!(
+        AudioQuality::from_str("opus96k").unwrap(),
+        AudioQuality::Opus_96k
+    );
+    assert!(AudioFormat::from_str("OPUS").is_ok());
+}
+
+#[test]
+fn test_replace_file_replaces_and_keeps_working_on_second_replace() {
+    use ghita_download::utils::fs::replace_file;
+
+    let base = std::env::temp_dir().join(format!("ghita_fs_replace_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    std::fs::create_dir_all(&base).unwrap();
+
+    let destination = base.join("payload.json");
+    let source = base.join("payload.tmp");
+
+    std::fs::write(&destination, b"first").unwrap();
+    std::fs::write(&source, b"second").unwrap();
+    replace_file(&source, &destination).unwrap();
+    assert_eq!(std::fs::read(&destination).unwrap(), b"second");
+
+    std::fs::write(&source, b"third").unwrap();
+    replace_file(&source, &destination).unwrap();
+    assert_eq!(std::fs::read(&destination).unwrap(), b"third");
+
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+#[test]
+fn test_sweep_stale_temp_dirs_removes_only_temp_prefix() {
+    use ghita_download::utils::file_helper::sweep_stale_temp_dirs;
+
+    let base = std::env::temp_dir().join(format!("ghita_sweep_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    std::fs::create_dir_all(&base).unwrap();
+
+    let stale = base.join(".ghita_temp_old");
+    std::fs::create_dir_all(&stale).unwrap();
+    std::fs::write(stale.join("leftover.tmp"), b"x").unwrap();
+
+    let stale_two = base.join(".ghita_temp_123_0");
+    std::fs::create_dir_all(&stale_two).unwrap();
+
+    let keep_dir = base.join("keep_me");
+    std::fs::create_dir_all(&keep_dir).unwrap();
+    let keep_file = base.join(".ghita_temp_file.txt");
+    std::fs::write(&keep_file, b"not a dir").unwrap();
+
+    let removed = sweep_stale_temp_dirs(&base).unwrap();
+    assert_eq!(removed, 2);
+    assert!(!stale.exists());
+    assert!(!stale_two.exists());
+    assert!(keep_dir.exists());
+    assert!(keep_file.exists());
+
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+#[test]
+fn test_sweep_stale_temp_dirs_missing_dir_is_ok() {
+    use ghita_download::utils::file_helper::sweep_stale_temp_dirs;
+
+    let missing = std::env::temp_dir().join(format!("ghita_sweep_missing_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&missing);
+    assert_eq!(sweep_stale_temp_dirs(&missing).unwrap(), 0);
+}
+
+#[test]
+fn test_is_retryable_status_classification() {
+    use ghita_download::utils::http::is_retryable_status;
+
+    assert!(is_retryable_status(reqwest::StatusCode::TOO_MANY_REQUESTS));
+    assert!(!is_retryable_status(
+        reqwest::StatusCode::INTERNAL_SERVER_ERROR
+    ));
+    assert!(!is_retryable_status(reqwest::StatusCode::BAD_REQUEST));
+}
+
+#[tokio::test]
+async fn test_with_retry_succeeds_after_transient_failures() {
+    use ghita_download::utils::http::with_retry;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    let calls = Arc::new(AtomicUsize::new(0));
+    let calls_inner = calls.clone();
+    let result = with_retry(move || {
+        let calls = calls_inner.clone();
+        async move {
+            let n = calls.fetch_add(1, Ordering::SeqCst);
+            if n < 2 {
+                let err = reqwest::Client::new()
+                    .get("http://127.0.0.1:1/")
+                    .send()
+                    .await
+                    .unwrap_err();
+                Err(anyhow::anyhow!(err))
+            } else {
+                Ok::<u32, anyhow::Error>(7)
+            }
+        }
+    })
+    .await;
+
+    assert_eq!(result.unwrap(), 7);
+    assert_eq!(calls.load(Ordering::SeqCst), 3);
+}
+
+#[tokio::test]
+async fn test_with_retry_does_not_retry_plain_errors() {
+    use ghita_download::utils::http::with_retry;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    let calls = Arc::new(AtomicUsize::new(0));
+    let calls_inner = calls.clone();
+    let result = with_retry(move || {
+        let calls = calls_inner.clone();
+        async move {
+            calls.fetch_add(1, Ordering::SeqCst);
+            Err::<u32, anyhow::Error>(anyhow::anyhow!("lỗi thường"))
+        }
+    })
+    .await;
+
+    assert!(result.is_err());
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
 }
