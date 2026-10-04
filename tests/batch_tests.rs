@@ -19,6 +19,8 @@ fn sample_settings(output_dir: PathBuf) -> DownloadSettings {
         video_resolution: None,
         concurrency: 3,
         keep_accents: false,
+        cookies_file: None,
+        cookies_from_browser: None,
     }
 }
 
