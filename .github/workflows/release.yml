@@ -12,7 +12,7 @@ jobs:
     name: Build + verify + publish installer (windows)
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Setup Rust toolchain (rust-toolchain.toml)
         uses: actions-rust-lang/setup-rust-toolchain@v1
@@ -32,6 +32,10 @@ jobs:
             throw "Tag $($env:TAG_NAME) does not match package version v$version"
           }
           "version=$version" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          $changelog = Get-Content -LiteralPath "CHANGELOG.md" -Raw
+          if (!$changelog.Contains("## [$version]")) {
+            throw "CHANGELOG.md does not contain a '## [$version]' entry"
+          }
 
       - name: Install FFmpeg
         shell: pwsh
@@ -39,7 +43,15 @@ jobs:
           choco install ffmpeg -y --no-progress
           ffmpeg -version | Select-Object -First 1
 
+      - name: Restore pinned yt-dlp cache
+        id: ytdlp_cache
+        uses: actions/cache@v4
+        with:
+          path: bin/yt-dlp.exe
+          key: ytdlp-${{ hashFiles('Release/yt-dlp.json') }}
+
       - name: Download pinned yt-dlp
+        if: steps.ytdlp_cache.outputs.cache-hit != 'true'
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path "bin" | Out-Null
@@ -59,6 +71,15 @@ jobs:
           GHITA_CI: "1"
         shell: cmd
         run: build_installer.bat
+
+      - name: Installer smoke check
+        shell: pwsh
+        run: |
+          $out = & "target/release/ghitadownload.exe" --version
+          if ($out -ne "ghitadownload $env:VERSION") {
+            throw "Smoke check failed: got '$out', expected 'ghitadownload $env:VERSION'"
+          }
+          Write-Host "Smoke OK: $out"
 
       - name: Verify published artifact
         shell: pwsh

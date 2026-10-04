@@ -26,6 +26,7 @@ pub(super) struct TaskContext {
     pub(super) has_node: bool,
     pub(super) temp_dir: PathBuf,
     pub(super) out_dir: PathBuf,
+    pub(super) cancel: crate::core::cancel::Cancellation,
 }
 
 pub(super) async fn process_task(
@@ -43,6 +44,7 @@ pub(super) async fn process_task(
         has_node,
         temp_dir,
         out_dir,
+        cancel,
     } = ctx;
 
     handle.set_style(
@@ -65,10 +67,24 @@ pub(super) async fn process_task(
     let mut downloaded: Option<PathBuf> = None;
     let requires_audio_stream = matches!(
         settings.format,
-        AudioFormat::Mp3 | AudioFormat::Wav | AudioFormat::Flac | AudioFormat::Aac
+        AudioFormat::Mp3
+            | AudioFormat::Wav
+            | AudioFormat::Flac
+            | AudioFormat::Aac
+            | AudioFormat::Opus
     );
 
     for (attempt_idx, target) in targets.iter().enumerate() {
+        if cancel.is_cancelled() {
+            handle.finish_and_clear();
+            logs.push(format!("    {} {}", "✖".red(), "Đã hủy tải"));
+            return TaskOutcome {
+                ok: false,
+                logs,
+                task,
+                task_index: index,
+            };
+        }
         let label = if attempt_idx == 0 {
             "tải luồng gốc".to_string()
         } else {
@@ -108,73 +124,94 @@ pub(super) async fn process_task(
             let temp = temp_dir.clone();
             let tgt = target.clone();
             let bar = handle.clone();
-            let dl_res = tokio::task::spawn_blocking(move || {
-                let dl = StreamDownloader::new(ytdlp_p.as_path(), has_node);
-                dl.download_stream(&tgt, &temp, mode, Some(&bar))
-            })
-            .await;
+            let dl = StreamDownloader::new(
+                ytdlp_p.as_path(),
+                has_node,
+                settings.cookies_file.clone(),
+                settings.cookies_from_browser.clone(),
+            );
+            let dl_res = dl
+                .download_stream(&tgt, &temp, mode, Some(&bar), cancel.subscribe())
+                .await;
 
             match dl_res {
-                Ok(Ok(p)) => p,
-                Ok(Err(e)) => {
-                    logs.push(format!("    {} {}", "✖".red(), e));
-                    continue;
-                }
+                Ok(p) => p,
                 Err(e) => {
-                    logs.push(format!("    {} Lỗi luồng tải: {}", "⚠".yellow(), e));
+                    logs.push(format!("    {} {}", "✖".red(), e));
+                    if cancel.is_cancelled() {
+                        handle.finish_and_clear();
+                        logs.push(format!("    {} {}", "✖".red(), "Đã hủy tải"));
+                        return TaskOutcome {
+                            ok: false,
+                            logs,
+                            task,
+                            task_index: index,
+                        };
+                    }
                     continue;
                 }
             }
         };
 
+        if cancel.is_cancelled() {
+            handle.finish_and_clear();
+            logs.push(format!("    {} {}", "✖".red(), "Đã hủy tải"));
+            let _ = std::fs::remove_file(&path);
+            return TaskOutcome {
+                ok: false,
+                logs,
+                task,
+                task_index: index,
+            };
+        }
+
         let ff = ffmpeg.clone();
         let probe_path = path.clone();
         let expected = task.expected_duration_secs;
-        let check = tokio::task::spawn_blocking(move || {
-            if verify::has_media_signature(&probe_path).is_err() {
-                let filename = probe_path
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or_default();
-                let suno_re = &*SUNO_UUID_RE;
-                if let Some(caps) = suno_re.captures(filename) {
-                    let uuid = caps[0].to_string();
-                    if let Ok(mut bytes) = std::fs::read(&probe_path) {
-                        let s_client = SunoClient::new();
-                        if let Ok(rt) = tokio::runtime::Builder::new_current_thread()
-                            .enable_all()
-                            .build()
-                        {
-                            let _ = rt.block_on(s_client.decrypt_clip_media(&uuid, &mut bytes));
-                            let _ = std::fs::write(&probe_path, &bytes);
-                        }
+        let sig_path = probe_path.clone();
+        let missing_signature =
+            tokio::task::spawn_blocking(move || verify::has_media_signature(&sig_path).is_err())
+                .await
+                .unwrap_or(false);
+
+        if missing_signature {
+            let filename = probe_path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or_default();
+            let suno_re = &*SUNO_UUID_RE;
+            if let Some(caps) = suno_re.captures(filename) {
+                let uuid = caps[0].to_string();
+                if let Ok(mut bytes) = tokio::fs::read(&probe_path).await {
+                    let s_client = SunoClient::new();
+                    if s_client.decrypt_clip_media(&uuid, &mut bytes).await.is_ok() {
+                        let _ = tokio::fs::write(&probe_path, &bytes).await;
                     }
                 }
             }
-            verify::probe_media(&probe_path, ff.as_path()).and_then(|info| {
-                verify::validate_downloaded(&info, expected, DURATION_TOLERANCE_SECS)?;
-                if !info.has_audio && requires_audio_stream {
-                    return Err(anyhow!(
-                        "Nguồn không chứa luồng âm thanh (video im lặng hoặc audio bị khóa), không thể xuất tệp âm thanh"
-                    ));
-                }
-                Ok(())
-            })
-        })
-        .await;
+        }
+
+        let check = match verify::probe_media(&path, ff.as_path(), cancel.subscribe()).await {
+            Ok(info) => verify::validate_downloaded(&info, expected, DURATION_TOLERANCE_SECS)
+                .and_then(|_| {
+                    if !info.has_audio && requires_audio_stream {
+                        return Err(anyhow!(
+                            "Nguồn không chứa luồng âm thanh (video im lặng hoặc audio bị khóa), không thể xuất tệp âm thanh"
+                        ));
+                    }
+                    Ok(())
+                }),
+            Err(e) => Err(e),
+        };
 
         match check {
-            Ok(Ok(())) => {
+            Ok(()) => {
                 downloaded = Some(path);
                 break;
             }
-            Ok(Err(e)) => {
-                let _ = std::fs::remove_file(&path);
-                logs.push(format!("    {} Tệp không đạt kiểm chứng: {}", "✖".red(), e));
-            }
             Err(e) => {
                 let _ = std::fs::remove_file(&path);
-                logs.push(format!("    {} Lỗi kiểm chứng tệp: {}", "⚠".yellow(), e));
+                logs.push(format!("    {} Tệp không đạt kiểm chứng: {}", "✖".red(), e));
             }
         }
     }
@@ -204,6 +241,7 @@ pub(super) async fn process_task(
         AudioFormat::Wav => "wav".to_string(),
         AudioFormat::Flac => "flac".to_string(),
         AudioFormat::Aac => "m4a".to_string(),
+        AudioFormat::Opus => "opus".to_string(),
         AudioFormat::Video => "mp4".to_string(),
         AudioFormat::Original => temp_file
             .extension()
@@ -251,29 +289,31 @@ pub(super) async fn process_task(
     let dst = final_path.clone();
     let meta = task.metadata.clone();
     let q = settings.quality;
-    let tr_res = tokio::task::spawn_blocking(move || match fmt {
-        AudioFormat::Mp3 | AudioFormat::Wav | AudioFormat::Flac | AudioFormat::Aac => tr.transcode(
-            &src,
-            &dst,
-            fmt,
-            q.unwrap_or_else(|| fmt.default_quality()),
-            &meta,
-        ),
-        _ => tr.remux_copy(&src, &dst, &meta),
-    })
-    .await;
-
+    let tr_res = match fmt {
+        AudioFormat::Mp3
+        | AudioFormat::Wav
+        | AudioFormat::Flac
+        | AudioFormat::Aac
+        | AudioFormat::Opus => {
+            tr.transcode(
+                &src,
+                &dst,
+                fmt,
+                q.unwrap_or_else(|| fmt.default_quality()),
+                &meta,
+                cancel.subscribe(),
+            )
+            .await
+        }
+        _ => tr.remux_copy(&src, &dst, &meta, cancel.subscribe()).await,
+    };
     let _ = std::fs::remove_file(&temp_file);
 
     let mut ok = true;
     match tr_res {
-        Ok(Ok(())) => {}
-        Ok(Err(e)) => {
-            logs.push(format!("    {} Xử lý tệp thất bại: {}", "✖".red(), e));
-            ok = false;
-        }
+        Ok(()) => {}
         Err(e) => {
-            logs.push(format!("    {} Lỗi luồng chuyển mã: {}", "✖".red(), e));
+            logs.push(format!("    {} Xử lý tệp thất bại: {}", "✖".red(), e));
             ok = false;
         }
     }
@@ -289,6 +329,35 @@ pub(super) async fn process_task(
                 logs.push(format!("    {} Ghi metadata thất bại: {}", "✖".red(), e));
                 ok = false;
             }
+        }
+    }
+
+    if ok && matches!(fmt, AudioFormat::Flac | AudioFormat::Aac) {
+        match tagger.fetch_cover_file(&task.metadata, &temp_dir).await {
+            Ok(Some(cover)) => {
+                match crate::core::transcoder::embed_cover_ffmpeg(
+                    &final_path,
+                    &cover,
+                    ffmpeg.as_path(),
+                ) {
+                    Ok(muxed) => match crate::utils::fs::replace_file(&muxed, &final_path) {
+                        Ok(()) => logs.push(format!(
+                            "    {} {}",
+                            "🖼".magenta(),
+                            "Nhúng ảnh bìa: Xong".green()
+                        )),
+                        Err(e) => logs.push(format!(
+                            "    {} Không thay thế tệp sau nhúng ảnh bìa: {}",
+                            "✖".red(),
+                            e
+                        )),
+                    },
+                    Err(e) => logs.push(format!("    {} Nhúng ảnh bìa thất bại: {}", "✖".red(), e)),
+                }
+                let _ = std::fs::remove_file(&cover);
+            }
+            Ok(None) => {}
+            Err(e) => logs.push(format!("    {} Tải ảnh bìa thất bại: {}", "✖".red(), e)),
         }
     }
 

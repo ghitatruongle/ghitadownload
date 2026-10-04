@@ -2,6 +2,14 @@ use anyhow::{anyhow, Result};
 use regex::Regex;
 use std::path::Path;
 use std::process::Command;
+use std::sync::LazyLock;
+
+static DURATION_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)").unwrap());
+static AUDIO_STREAM_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?m)Stream #\d+:\d+.*: Audio:").unwrap());
+static VIDEO_STREAM_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?m)Stream #\d+:\d+.*: Video:").unwrap());
 
 #[derive(Debug, Clone)]
 pub struct MediaInfo {
@@ -43,8 +51,7 @@ pub fn has_media_signature(path: &Path) -> Result<()> {
 }
 
 fn parse_duration_secs(stderr: &str) -> Result<f64> {
-    let re = Regex::new(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)")?;
-    if let Some(caps) = re.captures(stderr) {
+    if let Some(caps) = DURATION_RE.captures(stderr) {
         let hours: f64 = caps[1].parse().unwrap_or(0.0);
         let minutes: f64 = caps[2].parse().unwrap_or(0.0);
         let seconds: f64 = caps[3].parse().unwrap_or(0.0);
@@ -57,33 +64,55 @@ fn parse_duration_secs(stderr: &str) -> Result<f64> {
 }
 
 fn stream_flags(stderr: &str) -> (bool, bool) {
-    let has_audio = Regex::new(r"(?m)Stream #\d+:\d+.*: Audio:")
-        .map(|re| re.is_match(stderr))
-        .unwrap_or(false);
-    let has_video = Regex::new(r"(?m)Stream #\d+:\d+.*: Video:")
-        .map(|re| re.is_match(stderr))
-        .unwrap_or(false);
+    let has_audio = AUDIO_STREAM_RE.is_match(stderr);
+    let has_video = VIDEO_STREAM_RE.is_match(stderr);
     (has_audio, has_video)
 }
 
-pub fn probe_media(path: &Path, ffmpeg: &Path) -> Result<MediaInfo> {
+pub async fn probe_media(
+    path: &Path,
+    ffmpeg: &Path,
+    mut cancel: tokio::sync::watch::Receiver<bool>,
+) -> Result<MediaInfo> {
     let size_bytes = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
     if size_bytes == 0 {
         return Err(anyhow!("Tệp media rỗng"));
     }
     has_media_signature(path)?;
 
-    let output = Command::new(ffmpeg)
-        .arg("-hide_banner")
+    let mut cmd = Command::new(ffmpeg);
+    cmd.arg("-hide_banner")
         .arg("-i")
         .arg(path)
         .arg("-f")
         .arg("null")
         .arg("-")
-        .output()
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped());
+    let mut child = tokio::process::Command::from(cmd)
+        .spawn()
         .map_err(|e| anyhow!("Không thể chạy FFmpeg để kiểm chứng tệp: {}", e))?;
-
-    let stderr = String::from_utf8_lossy(&output.stderr);
+    let mut stderr_pipe = child
+        .stderr
+        .take()
+        .ok_or_else(|| anyhow!("Mất luồng stderr của FFmpeg"))?;
+    let stderr_task = tokio::spawn(async move {
+        let mut buf = Vec::new();
+        let _ = tokio::io::AsyncReadExt::read_to_end(&mut stderr_pipe, &mut buf).await;
+        buf
+    });
+    let status = tokio::select! {
+        status = child.wait() => status
+            .map_err(|e| anyhow!("Không thể chạy FFmpeg để kiểm chứng tệp: {}", e))?,
+        _ = cancel.changed() => {
+            let _ = child.kill().await;
+            stderr_task.abort();
+            return Err(anyhow!("Đã hủy"));
+        }
+    };
+    let stderr_buf = stderr_task.await.unwrap_or_default();
+    let stderr = String::from_utf8_lossy(&stderr_buf);
     if stderr.contains("Invalid data found")
         || stderr.contains("does not contain any stream")
         || stderr.contains("Output file is empty")
@@ -102,7 +131,7 @@ pub fn probe_media(path: &Path, ffmpeg: &Path) -> Result<MediaInfo> {
         ));
     }
 
-    if !output.status.success() && !(has_audio || has_video) {
+    if !status.success() && !(has_audio || has_video) {
         return Err(anyhow!(
             "FFmpeg không thể đọc tệp {}: {}",
             path.display(),
