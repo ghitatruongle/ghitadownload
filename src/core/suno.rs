@@ -1,6 +1,23 @@
 use anyhow::{anyhow, Result};
 use regex::Regex;
 use serde_json::Value;
+use std::sync::LazyLock;
+
+use crate::utils::http::{shared_client, with_retry};
+
+static OG_TITLE_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"<meta\s+property=["']og:title["']\s+content=["']([^"']+)["']"#).unwrap()
+});
+static TITLE_BY_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"(?i)<title>.*? by (.*?) \| Suno</title>"#).unwrap());
+static DISPLAY_NAME_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"\\"display_name\\":\\"([^\\"]+)\\""#).unwrap());
+static OG_IMAGE_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"<meta\s+property=["']og:image["']\s+content=["']([^"']+)["']"#).unwrap()
+});
+static MEDIA_URL_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"https://[^"\\]+\.(?:m4a|mp3|wav|flac|mp4|ogg|opus|webm)"#).unwrap()
+});
 
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
@@ -211,42 +228,33 @@ fn parse_clip_payload(value: &Value, uuid: &str) -> Result<SunoTrackMeta> {
 }
 
 fn extract_title(html: &str, uuid: &str) -> String {
-    if let Ok(regex) = Regex::new(r#"<meta\s+property=["']og:title["']\s+content=["']([^"']+)["']"#)
-    {
-        if let Some(captures) = regex.captures(html) {
-            let title = decode_entities(captures[1].trim());
-            if !title.is_empty() {
-                return title;
-            }
+    if let Some(captures) = OG_TITLE_RE.captures(html) {
+        let title = decode_entities(captures[1].trim());
+        if !title.is_empty() {
+            return title;
         }
     }
     format!("Suno AI Track {}", &uuid[..uuid.len().min(8)])
 }
 
 fn extract_artist(html: &str) -> String {
-    if let Ok(regex) = Regex::new(r#"(?i)<title>.*? by (.*?) \| Suno</title>"#) {
-        if let Some(captures) = regex.captures(html) {
-            let artist = decode_entities(captures[1].trim());
-            if !artist.is_empty() {
-                return artist;
-            }
+    if let Some(captures) = TITLE_BY_RE.captures(html) {
+        let artist = decode_entities(captures[1].trim());
+        if !artist.is_empty() {
+            return artist;
         }
     }
-    if let Ok(regex) = Regex::new(r#"\\"display_name\\":\\"([^\\"]+)\\""#) {
-        if let Some(captures) = regex.captures(html) {
-            let artist = decode_entities(captures[1].trim());
-            if !artist.is_empty() {
-                return artist;
-            }
+    if let Some(captures) = DISPLAY_NAME_RE.captures(html) {
+        let artist = decode_entities(captures[1].trim());
+        if !artist.is_empty() {
+            return artist;
         }
     }
     "Suno AI".to_string()
 }
 
 fn extract_cover(html: &str) -> Option<String> {
-    let regex =
-        Regex::new(r#"<meta\s+property=["']og:image["']\s+content=["']([^"']+)["']"#).ok()?;
-    regex
+    OG_IMAGE_RE
         .captures(html)
         .map(|captures| decode_entities(captures[1].trim()))
         .filter(|value| !value.is_empty())
@@ -254,8 +262,7 @@ fn extract_cover(html: &str) -> Option<String> {
 
 fn extract_media_urls_from_html(html: &str) -> Vec<String> {
     let mut urls = Vec::new();
-    let regex = Regex::new(r#"https://[^"\\]+\.(?:m4a|mp3|wav|flac|mp4|ogg|opus|webm)"#).unwrap();
-    for captures in regex.captures_iter(html) {
+    for captures in MEDIA_URL_RE.captures_iter(html) {
         let url = captures[0].to_string();
         if !urls.contains(&url) {
             urls.push(url);
@@ -276,43 +283,57 @@ impl SunoClient {
     }
 
     fn http_client() -> Result<reqwest::Client> {
-        reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(20))
-            .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36")
-            .build()
+        shared_client()
+            .cloned()
             .map_err(|error| anyhow!("Không thể tạo HTTP client Suno: {error}"))
     }
 
     pub async fn fetch_track(&self, uuid: &str) -> Result<SunoTrackMeta> {
         let client = Self::http_client()?;
         let api_url = format!("https://studio-api.prod.suno.com/api/clip/{}", uuid);
-        match client
-            .get(&api_url)
-            .header("Accept", "application/json")
-            .send()
-            .await
-        {
-            Ok(response) if response.status().is_success() => {
-                let value: Value = response
-                    .json()
-                    .await
-                    .map_err(|error| anyhow!("JSON metadata Suno không hợp lệ: {error}"))?;
-                return parse_clip_payload(&value, uuid);
+        let api_attempt: Result<Option<Value>> = with_retry(|| {
+            let client = client.clone();
+            let api_url = api_url.clone();
+            async move {
+                let response = client
+                    .get(&api_url)
+                    .header("Accept", "application/json")
+                    .send()
+                    .await?;
+                if response.status().is_success() {
+                    let value: Value = response
+                        .json()
+                        .await
+                        .map_err(|error| anyhow!("JSON metadata Suno không hợp lệ: {error}"))?;
+                    Ok(Some(value))
+                } else {
+                    Ok(None)
+                }
             }
-            _ => {}
+        })
+        .await;
+        if let Ok(Some(value)) = api_attempt {
+            return parse_clip_payload(&value, uuid);
         }
 
         let page_url = format!("https://suno.com/song/{}", uuid);
-        let html = client
-            .get(&page_url)
-            .send()
-            .await
-            .map_err(|error| anyhow!("Không thể truy cập Suno: {error}"))?
-            .error_for_status()
-            .map_err(|error| anyhow!("Suno trả về lỗi: {error}"))?
-            .text()
-            .await
-            .map_err(|error| anyhow!("Không đọc được dữ liệu Suno: {error}"))?;
+        let html = with_retry(|| {
+            let client = client.clone();
+            let page_url = page_url.clone();
+            async move {
+                Ok::<String, anyhow::Error>(
+                    client
+                        .get(&page_url)
+                        .send()
+                        .await?
+                        .error_for_status()?
+                        .text()
+                        .await?,
+                )
+            }
+        })
+        .await
+        .map_err(|error| anyhow!("Không thể truy cập Suno: {error}"))?;
 
         let media_urls = extract_media_urls_from_html(&html);
         if media_urls.is_empty() {
@@ -448,37 +469,58 @@ impl SunoClient {
         ))
     }
 
-    pub async fn fetch_playlist(&self, playlist_id: &str) -> Result<(String, Vec<SunoTrackMeta>)> {
+    pub(crate) async fn fetch_playlist_page(
+        &self,
+        playlist_id: &str,
+        page: u32,
+    ) -> Result<(String, Vec<SunoTrackMeta>)> {
         let client = Self::http_client()?;
         let api_url = format!(
-            "https://studio-api.prod.suno.com/api/playlist/{}/?page=1",
-            playlist_id
+            "https://studio-api.prod.suno.com/api/playlist/{}/?page={}",
+            playlist_id, page
         );
-        let resp = client
-            .get(&api_url)
-            .header("Accept", "application/json")
-            .send()
-            .await?
-            .error_for_status()?;
-        let value: Value = resp.json().await?;
-        let name = value["name"]
-            .as_str()
-            .filter(|n| !n.trim().is_empty())
-            .unwrap_or("Suno Playlist")
-            .to_string();
-
-        let mut tracks = Vec::new();
-        if let Some(clips) = value["playlist_clips"].as_array() {
-            for item in clips {
-                let clip = &item["clip"];
-                let clip_id = clip["id"].as_str().unwrap_or_default();
-                if !clip_id.is_empty() {
-                    if let Ok(meta) = parse_clip_payload(clip, clip_id) {
-                        tracks.push(meta);
-                    }
-                }
+        let value: Value = with_retry(|| {
+            let client = client.clone();
+            let api_url = api_url.clone();
+            async move {
+                Ok::<Value, anyhow::Error>(
+                    client
+                        .get(&api_url)
+                        .header("Accept", "application/json")
+                        .send()
+                        .await?
+                        .error_for_status()?
+                        .json()
+                        .await?,
+                )
             }
+        })
+        .await?;
+        let (name, tracks) = parse_playlist_page(&value);
+        Ok((name, tracks.into_iter().map(|(_, meta)| meta).collect()))
+    }
+
+    pub async fn fetch_playlist(&self, playlist_id: &str) -> Result<(String, Vec<SunoTrackMeta>)> {
+        let mut name = "Suno Playlist".to_string();
+        let mut tracks: Vec<SunoTrackMeta> = Vec::new();
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut page = 1u32;
+
+        loop {
+            let (page_name, page_tracks) = self.fetch_playlist_page(playlist_id, page).await?;
+            if page == 1 && !page_name.trim().is_empty() {
+                name = page_name;
+            }
+            if page_tracks.is_empty() {
+                break;
+            }
+            let added = merge_unique_tracks(&mut tracks, &mut seen, page_tracks);
+            if added == 0 {
+                break;
+            }
+            page += 1;
         }
+
         if tracks.is_empty() {
             return Err(anyhow!("Playlist Suno không có bài hát nào"));
         }
@@ -486,11 +528,48 @@ impl SunoClient {
     }
 }
 
+fn parse_playlist_page(value: &Value) -> (String, Vec<(String, SunoTrackMeta)>) {
+    let name = value["name"]
+        .as_str()
+        .filter(|n| !n.trim().is_empty())
+        .unwrap_or("Suno Playlist")
+        .to_string();
+
+    let mut tracks = Vec::new();
+    if let Some(clips) = value["playlist_clips"].as_array() {
+        for item in clips {
+            let clip = &item["clip"];
+            let clip_id = clip["id"].as_str().unwrap_or_default();
+            if !clip_id.is_empty() {
+                if let Ok(meta) = parse_clip_payload(clip, clip_id) {
+                    tracks.push((clip_id.to_string(), meta));
+                }
+            }
+        }
+    }
+    (name, tracks)
+}
+
+fn merge_unique_tracks(
+    tracks: &mut Vec<SunoTrackMeta>,
+    seen: &mut std::collections::HashSet<String>,
+    page_tracks: Vec<SunoTrackMeta>,
+) -> usize {
+    let mut added = 0usize;
+    for meta in page_tracks {
+        if seen.insert(meta.uuid.clone()) {
+            tracks.push(meta);
+            added += 1;
+        }
+    }
+    added
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         collect_media_urls, decrypt_aes_128_ctr, is_encrypted_encoding, is_forbidden_url,
-        parse_clip_payload,
+        merge_unique_tracks, parse_clip_payload, parse_playlist_page,
     };
     use serde_json::json;
 
@@ -575,6 +654,91 @@ mod tests {
         let (urls, encrypted) = collect_media_urls(&value);
         assert!(encrypted);
         assert_eq!(urls.len(), 2);
+    }
+
+    fn playlist_fixture(name: &str, clips: &[(&str, &str)]) -> serde_json::Value {
+        let playlist_clips: Vec<serde_json::Value> = clips
+            .iter()
+            .map(|(id, title)| {
+                json!({
+                    "clip": {
+                        "id": id,
+                        "title": title,
+                        "display_name": "Artist",
+                        "audio_url": format!("https://cdn.example.com/clip/{}.m4a", id),
+                        "media_urls": [],
+                        "is_public": true,
+                        "metadata": {"duration": 30.0}
+                    }
+                })
+            })
+            .collect();
+        json!({
+            "name": name,
+            "playlist_clips": playlist_clips
+        })
+    }
+
+    #[test]
+    fn parses_playlist_page_into_tracks() {
+        let page = playlist_fixture(
+            "My Mix",
+            &[
+                ("aaaaaaaa-0000-0000-0000-000000000001", "One"),
+                ("aaaaaaaa-0000-0000-0000-000000000002", "Two"),
+            ],
+        );
+        let (name, tracks) = parse_playlist_page(&page);
+        assert_eq!(name, "My Mix");
+        assert_eq!(tracks.len(), 2);
+        assert_eq!(tracks[0].0, "aaaaaaaa-0000-0000-0000-000000000001");
+        assert_eq!(tracks[1].1.title, "Two");
+    }
+
+    #[test]
+    fn parses_empty_playlist_page() {
+        let page = json!({"name": "", "playlist_clips": []});
+        let (name, tracks) = parse_playlist_page(&page);
+        assert_eq!(name, "Suno Playlist");
+        assert!(tracks.is_empty());
+    }
+
+    #[test]
+    fn merges_pages_deduping_clip_ids() {
+        let page_one = playlist_fixture(
+            "Mix",
+            &[
+                ("aaaaaaaa-0000-0000-0000-000000000001", "One"),
+                ("aaaaaaaa-0000-0000-0000-000000000002", "Two"),
+            ],
+        );
+        let page_two = playlist_fixture(
+            "Mix",
+            &[
+                ("aaaaaaaa-0000-0000-0000-000000000002", "Two"),
+                ("aaaaaaaa-0000-0000-0000-000000000003", "Three"),
+            ],
+        );
+        let (_, tracks_one) = parse_playlist_page(&page_one);
+        let (_, tracks_two) = parse_playlist_page(&page_two);
+
+        let mut collected = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        let added_one = merge_unique_tracks(
+            &mut collected,
+            &mut seen,
+            tracks_one.into_iter().map(|(_, meta)| meta).collect(),
+        );
+        let added_two = merge_unique_tracks(
+            &mut collected,
+            &mut seen,
+            tracks_two.into_iter().map(|(_, meta)| meta).collect(),
+        );
+
+        assert_eq!(added_one, 2);
+        assert_eq!(added_two, 1);
+        assert_eq!(collected.len(), 3);
+        assert_eq!(collected[2].title, "Three");
     }
 
     #[test]
