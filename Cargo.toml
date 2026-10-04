@@ -1,6 +1,6 @@
 [package]
 name = "ghita_download"
-version = "0.0.3-beta"
+version = "0.0.3"
 edition = "2021" 
 
 [[bin]]

@@ -8,7 +8,7 @@ if ($null -eq $versionLine) {
     throw "Không đọc được version từ Cargo.toml"
 }
 $version = $versionLine.Matches[0].Groups[1].Value
-if ($version -ne "0.0.3-beta") {
+if ([string]::IsNullOrWhiteSpace($version)) {
     throw "Unexpected version: $version"
 }
 

@@ -18,10 +18,15 @@ if %ERRORLEVEL% neq 0 (
     exit /b 1
 )
 
-echo [1/5] Kiểm tra format và test bằng lockfile...
+echo [1/5] Kiểm tra format, clippy và test bằng lockfile...
 cargo fmt --all -- --check
 if %ERRORLEVEL% neq 0 (
     echo [LỖI] Kiểm tra format thất bại.
+    exit /b 1
+)
+cargo clippy --locked --all-targets -- -D warnings
+if %ERRORLEVEL% neq 0 (
+    echo [LỖI] Clippy phát hiện cảnh báo hoặc lỗi.
     exit /b 1
 )
 cargo test --locked --all-targets
@@ -89,4 +94,4 @@ echo.
 echo ==================================================================
 echo   HOAN TAT! TEP CAI DAT DA SAN SANG: Release\ghitadownload_%VERSION%.exe
 echo ==================================================================
-pause
+if not defined GHITA_CI pause
