@@ -1,5 +1,13 @@
 use regex::Regex;
+use std::sync::LazyLock;
 use url::Url;
+
+static SUNO_UUID_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?i)(?:^|[^0-9a-f])([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?:[^0-9a-f]|$)",
+    )
+    .unwrap()
+});
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UrlType {
@@ -97,17 +105,13 @@ impl PlatformParser {
                     )
                 })
         }) {
-            let suno_uuid_re = Regex::new(
-                r"(?i)(?:^|[^0-9a-f])([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?:[^0-9a-f]|$)",
-            )
-            .unwrap();
             let haystack = format!(
                 "{} {} {}",
                 url.path(),
                 url.query().unwrap_or_default(),
                 url.fragment().unwrap_or_default()
             );
-            if let Some(caps) = suno_uuid_re.captures(&haystack) {
+            if let Some(caps) = SUNO_UUID_RE.captures(&haystack) {
                 let uuid = caps[1].to_ascii_lowercase();
                 if url.path().contains("/playlist/") || haystack.contains("playlist") {
                     return UrlType::SunoPlaylist(uuid);

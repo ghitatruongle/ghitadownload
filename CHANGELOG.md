@@ -1,5 +1,32 @@
 # Changelog
 
+## [0.0.4] - 2026-10-04
+
+### Added
+- Suno playlist pagination collecting every page of clips with deduplication by clip id.
+- Ctrl+C cancellation that kills child yt-dlp/FFmpeg processes, marks unfinished tasks as failed, and still writes the retry queue.
+- `--cookies <file>` and `--cookies-from-browser <browser>` flags forwarded to yt-dlp for login-gated sources.
+- `--format opus` output with `192k`/`128k`/`96k` quality options.
+- Cover art and metadata embedding for FLAC and M4A (AAC) outputs in addition to MP3.
+- JSON manifest `ghita_manifest_<timestamp>.json` written after every batch listing per-task status and output paths.
+- Stale `.ghita_temp_*` directory sweep at batch start.
+- Backoff with jitter between every yt-dlp retry attempt, and a shared HTTP retry helper with exponential backoff for Spotify/Suno 429 and timeout responses.
+- Shared `utils/fs::replace_file`, shared HTTP client in `utils/http`, yt-dlp argument constants in `core/ytdlp`, and a `build_task` helper replacing six duplicated task literals.
+- Info line when a local `ghita_config.json` overrides the global configuration.
+- CI hardening: `cargo audit` job, yt-dlp download cache, installer smoke check, CHANGELOG/tag cross-check, and Dependabot for cargo and GitHub Actions.
+
+### Changed
+- Replaced the nested `current_thread` runtime inside the Suno decrypt blocking task with a direct async call.
+- JoinError mapping records the exact failed task index instead of the first unfinished slot.
+- Removed the hard-coded Microsoft Store Python path from yt-dlp discovery; installed locations and `PATH` remain supported.
+
+### Release artifact
+- `Release/ghitadownload_0.0.4.exe`
+- SHA-256: `5EBB7A4F87D5DE7516363F325DAB0EAB7004D89A59FDFE5CF7DDF2CD126E83D7`
+
+### Compatibility
+- Existing CLI flags, format/quality names, exit codes, and `AppConfig`/`FailedQueue` JSON remain compatible. `--format opus` does not change defaults of existing formats.
+
 ## [0.0.3] - 2026-10-01
 
 ### Added
