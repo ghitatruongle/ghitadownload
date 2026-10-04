@@ -1,6 +1,6 @@
 [package]
 name = "ghita_download"
-version = "0.0.3"
+version = "0.0.4"
 edition = "2021" 
 
 [[bin]]
@@ -26,7 +26,7 @@ colored = "2.1"
 dirs = "5.0"
 url = "2.5"
 sanitize-filename = "0.5"
-crossterm = "0.25"
+crossterm = "0.29"
 clap = { version = "4", features = ["derive"] }
 sha2 = "0.10"
 aes-gcm = "0.10"
