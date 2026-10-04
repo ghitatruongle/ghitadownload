@@ -2,7 +2,7 @@ use anyhow::{anyhow, Result};
 use colored::Colorize;
 use indicatif::{ProgressBar, ProgressStyle};
 use std::io::IsTerminal;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::core::platform::{PlatformParser, UrlType};
 use crate::core::spotify::{SpotifyClient, SpotifyTrackMeta};
@@ -124,6 +124,8 @@ impl BatchProcessor {
                         self.ytdlp_path.as_path(),
                         self.has_node,
                         url.clone(),
+                        self.settings.cookies_file.as_ref(),
+                        self.settings.cookies_from_browser.as_deref(),
                     )
                     .await
                     {
@@ -140,24 +142,19 @@ impl BatchProcessor {
                             let total_items = items.len() as u32;
                             for (idx, item) in items.into_iter().enumerate() {
                                 let track_num = (idx + 1) as u32;
-                                tasks.push(DownloadTask {
-                                    display_title: format!("{} - {}", item.uploader, item.title),
-                                    source_or_search: item.direct_url,
-                                    fallback_searches: vec![format!(
-                                        "ytsearch1:{} {}",
-                                        item.uploader, item.title
-                                    )],
-                                    expected_duration_secs: None,
-                                    metadata: AudioMetadata {
-                                        title: item.title,
-                                        artists: vec![item.uploader],
-                                        album: "YouTube Music".to_string(),
-                                        release_year: None,
-                                        cover_url: item.thumbnail_url,
-                                        track_number: Some(track_num),
-                                        total_tracks: Some(total_items),
-                                    },
-                                });
+                                tasks.push(build_task(
+                                    format!("{} - {}", item.uploader, item.title),
+                                    item.direct_url,
+                                    vec![format!("ytsearch1:{} {}", item.uploader, item.title)],
+                                    None,
+                                    item.title,
+                                    vec![item.uploader],
+                                    "YouTube Music".to_string(),
+                                    None,
+                                    item.thumbnail_url,
+                                    Some(track_num),
+                                    Some(total_items),
+                                ));
                             }
                         }
                         Err(e) => {
@@ -183,29 +180,26 @@ impl BatchProcessor {
                         self.ytdlp_path.as_path(),
                         self.has_node,
                         url.clone(),
+                        self.settings.cookies_file.as_ref(),
+                        self.settings.cookies_from_browser.as_deref(),
                     )
                     .await
                     {
                         Ok(item) => {
                             let expected = item.duration_secs.map(|d| d.round() as u64);
-                            tasks.push(DownloadTask {
-                                display_title: format!("{} - {}", item.uploader, item.title),
-                                source_or_search: item.direct_url,
-                                fallback_searches: vec![format!(
-                                    "ytsearch1:{} {}",
-                                    item.uploader, item.title
-                                )],
-                                expected_duration_secs: expected,
-                                metadata: AudioMetadata {
-                                    title: item.title,
-                                    artists: vec![item.uploader],
-                                    album: "YouTube".to_string(),
-                                    release_year: None,
-                                    cover_url: item.thumbnail_url,
-                                    track_number: None,
-                                    total_tracks: None,
-                                },
-                            });
+                            tasks.push(build_task(
+                                format!("{} - {}", item.uploader, item.title),
+                                item.direct_url,
+                                vec![format!("ytsearch1:{} {}", item.uploader, item.title)],
+                                expected,
+                                item.title,
+                                vec![item.uploader],
+                                "YouTube".to_string(),
+                                None,
+                                item.thumbnail_url,
+                                None,
+                                None,
+                            ));
                         }
                         Err(_) => {
                             tasks.push(self.fallback_task(trimmed, "YouTube"));
@@ -234,23 +228,19 @@ impl BatchProcessor {
                                 .push(format!("ytsearch1:{} {}", meta.artist, meta.title));
                             fallback_searches
                                 .push(format!("ytsearch3:{} {}", meta.artist, meta.title));
-                            tasks.push(DownloadTask {
-                                display_title: format!("{} - {}", meta.artist, meta.title),
-                                source_or_search: format!("suno:{}", uuid),
+                            tasks.push(build_task(
+                                format!("{} - {}", meta.artist, meta.title),
+                                format!("suno:{}", uuid),
                                 fallback_searches,
-                                expected_duration_secs: meta
-                                    .duration_secs
-                                    .map(|d| d.round() as u64),
-                                metadata: AudioMetadata {
-                                    title: meta.title,
-                                    artists: vec![meta.artist],
-                                    album: "Suno AI Music".to_string(),
-                                    release_year: None,
-                                    cover_url: meta.cover_url,
-                                    track_number: None,
-                                    total_tracks: None,
-                                },
-                            });
+                                meta.duration_secs.map(|d| d.round() as u64),
+                                meta.title,
+                                vec![meta.artist],
+                                "Suno AI Music".to_string(),
+                                None,
+                                meta.cover_url,
+                                None,
+                                None,
+                            ));
                         }
                         Err(error) => {
                             spinner_emit(
@@ -283,23 +273,19 @@ impl BatchProcessor {
                                     .push(format!("ytsearch1:{} {}", meta.artist, meta.title));
                                 fallback_searches
                                     .push(format!("ytsearch3:{} {}", meta.artist, meta.title));
-                                tasks.push(DownloadTask {
-                                    display_title: format!("{} - {}", meta.artist, meta.title),
-                                    source_or_search: format!("suno:{}", meta.uuid),
+                                tasks.push(build_task(
+                                    format!("{} - {}", meta.artist, meta.title),
+                                    format!("suno:{}", meta.uuid),
                                     fallback_searches,
-                                    expected_duration_secs: meta
-                                        .duration_secs
-                                        .map(|d| d.round() as u64),
-                                    metadata: AudioMetadata {
-                                        title: meta.title,
-                                        artists: vec![meta.artist],
-                                        album: playlist_name.clone(),
-                                        release_year: None,
-                                        cover_url: meta.cover_url,
-                                        track_number: Some((idx + 1) as u32),
-                                        total_tracks: Some(total),
-                                    },
-                                });
+                                    meta.duration_secs.map(|d| d.round() as u64),
+                                    meta.title,
+                                    vec![meta.artist],
+                                    playlist_name.clone(),
+                                    None,
+                                    meta.cover_url,
+                                    Some((idx + 1) as u32),
+                                    Some(total),
+                                ));
                             }
                         }
                         Err(error) => {
@@ -327,21 +313,19 @@ impl BatchProcessor {
                         .rsplit_once('.')
                         .map(|(stem, _)| stem.to_string())
                         .unwrap_or(title);
-                    tasks.push(DownloadTask {
-                        display_title: title.clone(),
-                        source_or_search: url.clone(),
-                        fallback_searches: Vec::new(),
-                        expected_duration_secs: None,
-                        metadata: AudioMetadata {
-                            title,
-                            artists: vec!["Direct".to_string()],
-                            album: "Direct Media".to_string(),
-                            release_year: None,
-                            cover_url: None,
-                            track_number: None,
-                            total_tracks: None,
-                        },
-                    });
+                    tasks.push(build_task(
+                        title.clone(),
+                        url.clone(),
+                        Vec::new(),
+                        None,
+                        title,
+                        vec!["Direct".to_string()],
+                        "Direct Media".to_string(),
+                        None,
+                        None,
+                        None,
+                        None,
+                    ));
                 }
                 UrlType::SocialVideo { url, platform_name } => {
                     spinner.set_message(format!(
@@ -353,66 +337,58 @@ impl BatchProcessor {
                         self.has_node,
                         url.clone(),
                         platform_name.clone(),
+                        self.settings.cookies_file.as_ref(),
+                        self.settings.cookies_from_browser.as_deref(),
                     )
                     .await
                     {
-                        tasks.push(DownloadTask {
-                            display_title: format!("{} - {}", item.uploader, item.title),
-                            source_or_search: item.direct_url,
-                            fallback_searches: Vec::new(),
-                            expected_duration_secs: None,
-                            metadata: AudioMetadata {
-                                title: item.title,
-                                artists: vec![item.uploader],
-                                album: platform_name.clone(),
-                                release_year: None,
-                                cover_url: item.thumbnail_url,
-                                track_number: None,
-                                total_tracks: None,
-                            },
-                        });
+                        tasks.push(build_task(
+                            format!("{} - {}", item.uploader, item.title),
+                            item.direct_url,
+                            Vec::new(),
+                            None,
+                            item.title,
+                            vec![item.uploader],
+                            platform_name.clone(),
+                            None,
+                            item.thumbnail_url,
+                            None,
+                            None,
+                        ));
                     } else {
-                        tasks.push(DownloadTask {
-                            display_title: format!(
-                                "{} - {}",
-                                platform_name,
-                                sanitize_name(trimmed)
-                            ),
-                            source_or_search: trimmed.to_string(),
-                            fallback_searches: Vec::new(),
-                            expected_duration_secs: None,
-                            metadata: AudioMetadata {
-                                title: format!("{} Audio", platform_name),
-                                artists: vec![platform_name.clone()],
-                                album: platform_name.clone(),
-                                release_year: None,
-                                cover_url: None,
-                                track_number: None,
-                                total_tracks: None,
-                            },
-                        });
+                        tasks.push(build_task(
+                            format!("{} - {}", platform_name, sanitize_name(trimmed)),
+                            trimmed.to_string(),
+                            Vec::new(),
+                            None,
+                            format!("{} Audio", platform_name),
+                            vec![platform_name.clone()],
+                            platform_name.clone(),
+                            None,
+                            None,
+                            None,
+                            None,
+                        ));
                     }
                 }
                 UrlType::DirectSearch(query) => {
                     spinner.set_message(format!("{} Tìm kiếm: {}...", step_str, query));
-                    tasks.push(DownloadTask {
-                        display_title: query.clone(),
-                        source_or_search: format!("ytsearch1:{}", query),
-                        fallback_searches: vec![
+                    tasks.push(build_task(
+                        query.clone(),
+                        format!("ytsearch1:{}", query),
+                        vec![
                             format!("ytsearch3:{}", query),
                             format!("ytsearch1:{} official audio", query),
                         ],
-                        expected_duration_secs: None,
-                        metadata: AudioMetadata {
-                            title: query.clone(),
-                            artists: vec!["Search".to_string()],
-                            album: "Search".to_string(),
-                            release_year: None,
-                            cover_url: None,
-                            track_number: None,
-                            total_tracks: None,
-                        },
-                    });
+                        None,
+                        query.clone(),
+                        vec!["Search".to_string()],
+                        "Search".to_string(),
+                        None,
+                        None,
+                        None,
+                        None,
+                    ));
                 }
             }
         }
@@ -423,21 +399,19 @@ impl BatchProcessor {
 
     fn fallback_task(&self, source: &str, platform_name: &str) -> DownloadTask {
         let title = sanitize_name(source);
-        DownloadTask {
-            display_title: format!("{} - {}", platform_name, title),
-            source_or_search: source.to_string(),
-            fallback_searches: Vec::new(),
-            expected_duration_secs: None,
-            metadata: AudioMetadata {
-                title,
-                artists: vec![platform_name.to_string()],
-                album: platform_name.to_string(),
-                release_year: None,
-                cover_url: None,
-                track_number: None,
-                total_tracks: None,
-            },
-        }
+        build_task(
+            format!("{} - {}", platform_name, title),
+            source.to_string(),
+            Vec::new(),
+            None,
+            title,
+            vec![platform_name.to_string()],
+            platform_name.to_string(),
+            None,
+            None,
+            None,
+            None,
+        )
     }
 
     fn spotify_meta_to_task(&self, meta: SpotifyTrackMeta) -> DownloadTask {
@@ -456,21 +430,50 @@ impl BatchProcessor {
 
         let expected_duration_secs = meta.duration_ms.map(|ms| ms / 1000);
 
-        DownloadTask {
+        build_task(
             display_title,
-            source_or_search: search_target,
+            search_target,
             fallback_searches,
             expected_duration_secs,
-            metadata: AudioMetadata {
-                title: meta.title,
-                artists: meta.artists,
-                album: meta.album,
-                release_year: meta.release_year,
-                cover_url: meta.cover_url,
-                track_number: meta.track_number,
-                total_tracks: meta.total_tracks,
-            },
-        }
+            meta.title,
+            meta.artists,
+            meta.album,
+            meta.release_year,
+            meta.cover_url,
+            meta.track_number,
+            meta.total_tracks,
+        )
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_task(
+    display_title: String,
+    source_or_search: String,
+    fallback_searches: Vec<String>,
+    expected_duration_secs: Option<u64>,
+    title: String,
+    artists: Vec<String>,
+    album: String,
+    release_year: Option<u32>,
+    cover_url: Option<String>,
+    track_number: Option<u32>,
+    total_tracks: Option<u32>,
+) -> DownloadTask {
+    DownloadTask {
+        display_title,
+        source_or_search,
+        fallback_searches,
+        expected_duration_secs,
+        metadata: AudioMetadata {
+            title,
+            artists,
+            album,
+            release_year,
+            cover_url,
+            track_number,
+            total_tracks,
+        },
     }
 }
 
@@ -486,10 +489,20 @@ async fn resolve_youtube_playlist(
     ytdlp_path: &Path,
     has_node: bool,
     url: String,
+    cookies_file: Option<&PathBuf>,
+    cookies_from_browser: Option<&str>,
 ) -> Result<Vec<YouTubeTrackMeta>> {
     let path = ytdlp_path.to_path_buf();
+    let cookies_file = cookies_file.cloned();
+    let cookies_from_browser = cookies_from_browser.map(str::to_string);
     tokio::task::spawn_blocking(move || {
-        YouTubeClient::new(&path, has_node).extract_playlist_items(&url)
+        YouTubeClient::new(
+            &path,
+            has_node,
+            cookies_file.as_ref(),
+            cookies_from_browser.as_deref(),
+        )
+        .extract_playlist_items(&url)
     })
     .await
     .map_err(|error| anyhow!("Không thể đọc playlist YouTube: {error}"))?
@@ -499,11 +512,23 @@ async fn resolve_youtube_video(
     ytdlp_path: &Path,
     has_node: bool,
     url: String,
+    cookies_file: Option<&PathBuf>,
+    cookies_from_browser: Option<&str>,
 ) -> Result<YouTubeTrackMeta> {
     let path = ytdlp_path.to_path_buf();
-    tokio::task::spawn_blocking(move || YouTubeClient::new(&path, has_node).fetch_video_info(&url))
-        .await
-        .map_err(|error| anyhow!("Không thể đọc video YouTube: {error}"))?
+    let cookies_file = cookies_file.cloned();
+    let cookies_from_browser = cookies_from_browser.map(str::to_string);
+    tokio::task::spawn_blocking(move || {
+        YouTubeClient::new(
+            &path,
+            has_node,
+            cookies_file.as_ref(),
+            cookies_from_browser.as_deref(),
+        )
+        .fetch_video_info(&url)
+    })
+    .await
+    .map_err(|error| anyhow!("Không thể đọc video YouTube: {error}"))?
 }
 
 async fn resolve_youtube_media(
@@ -511,10 +536,20 @@ async fn resolve_youtube_media(
     has_node: bool,
     url: String,
     platform_name: String,
+    cookies_file: Option<&PathBuf>,
+    cookies_from_browser: Option<&str>,
 ) -> Result<YouTubeTrackMeta> {
     let path = ytdlp_path.to_path_buf();
+    let cookies_file = cookies_file.cloned();
+    let cookies_from_browser = cookies_from_browser.map(str::to_string);
     tokio::task::spawn_blocking(move || {
-        YouTubeClient::new(&path, has_node).fetch_media_info(&url, &platform_name)
+        YouTubeClient::new(
+            &path,
+            has_node,
+            cookies_file.as_ref(),
+            cookies_from_browser.as_deref(),
+        )
+        .fetch_media_info(&url, &platform_name)
     })
     .await
     .map_err(|error| anyhow!("Không thể đọc media YouTube: {error}"))?

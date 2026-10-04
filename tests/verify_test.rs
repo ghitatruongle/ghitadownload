@@ -1,3 +1,4 @@
+use ghita_download::core::cancel::Cancellation;
 use ghita_download::core::verify::{
     has_media_signature, probe_media, validate_downloaded, MediaInfo,
 };
@@ -34,14 +35,17 @@ fn media_info(duration_secs: f64, size_bytes: u64) -> MediaInfo {
     }
 }
 
-#[test]
-fn test_probe_media_duration_accuracy() {
+#[tokio::test]
+async fn test_probe_media_duration_accuracy() {
     let ffmpeg = find_ffmpeg().expect("FFmpeg must be available for testing");
+    let cancel = Cancellation::new();
     let dir = test_tmp_dir("probe");
 
     let tone_short = dir.join("tone_2s.wav");
     gen_tone(&ffmpeg, 2, &tone_short);
-    let info_short = probe_media(&tone_short, &ffmpeg).expect("probe 2s failed");
+    let info_short = probe_media(&tone_short, &ffmpeg, cancel.subscribe())
+        .await
+        .expect("probe 2s failed");
     assert!(
         (info_short.duration_secs - 2.0).abs() <= 0.5,
         "Duration 2s lệch quá nhiều: {}",
@@ -52,7 +56,9 @@ fn test_probe_media_duration_accuracy() {
 
     let tone_long = dir.join("tone_30s.wav");
     gen_tone(&ffmpeg, 30, &tone_long);
-    let info_long = probe_media(&tone_long, &ffmpeg).expect("probe 30s failed");
+    let info_long = probe_media(&tone_long, &ffmpeg, cancel.subscribe())
+        .await
+        .expect("probe 30s failed");
     assert!(
         (info_long.duration_secs - 30.0).abs() <= 0.5,
         "Duration 30s lệch quá nhiều: {}",
@@ -63,14 +69,17 @@ fn test_probe_media_duration_accuracy() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-#[test]
-fn test_probe_media_empty_file_fails() {
+#[tokio::test]
+async fn test_probe_media_empty_file_fails() {
     let ffmpeg = find_ffmpeg().expect("FFmpeg must be available for testing");
+    let cancel = Cancellation::new();
     let dir = test_tmp_dir("empty");
 
     let broken = dir.join("broken.wav");
     std::fs::write(&broken, []).unwrap();
-    assert!(probe_media(&broken, &ffmpeg).is_err());
+    assert!(probe_media(&broken, &ffmpeg, cancel.subscribe())
+        .await
+        .is_err());
 
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -134,14 +143,17 @@ fn test_validate_downloaded_rules() {
     assert!(validate_downloaded(&no_streams, None, 10.0).is_err());
 }
 
-#[test]
-fn test_validate_end_to_end_with_generated_tone() {
+#[tokio::test]
+async fn test_validate_end_to_end_with_generated_tone() {
     let ffmpeg = find_ffmpeg().expect("FFmpeg must be available for testing");
+    let cancel = Cancellation::new();
     let dir = test_tmp_dir("e2e");
 
     let tone = dir.join("tone_5s.wav");
     gen_tone(&ffmpeg, 5, &tone);
-    let info = probe_media(&tone, &ffmpeg).expect("probe 5s failed");
+    let info = probe_media(&tone, &ffmpeg, cancel.subscribe())
+        .await
+        .expect("probe 5s failed");
 
     assert!(validate_downloaded(&info, Some(5), 10.0).is_ok());
     assert!(validate_downloaded(&info, Some(60), 10.0).is_err());
@@ -149,9 +161,10 @@ fn test_validate_end_to_end_with_generated_tone() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-#[test]
-fn test_probe_rejects_non_media_payload() {
+#[tokio::test]
+async fn test_probe_rejects_non_media_payload() {
     let ffmpeg = find_ffmpeg().expect("FFmpeg must be available for testing");
+    let cancel = Cancellation::new();
     let dir = test_tmp_dir("non_media");
     let path = dir.join("payload.bin");
     let mut bytes = vec![0_u8; 20_000];
@@ -159,7 +172,9 @@ fn test_probe_rejects_non_media_payload() {
         *b = (i as u8).wrapping_mul(13).wrapping_add(29);
     }
     std::fs::write(&path, &bytes).unwrap();
-    assert!(probe_media(&path, &ffmpeg).is_err());
+    assert!(probe_media(&path, &ffmpeg, cancel.subscribe())
+        .await
+        .is_err());
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -192,13 +207,16 @@ fn test_has_media_signature_accepts_common_containers() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-#[test]
-fn test_probe_media_on_tiny_ftyp_without_decode() {
+#[tokio::test]
+async fn test_probe_media_on_tiny_ftyp_without_decode() {
     let ffmpeg = find_ffmpeg().expect("FFmpeg must be available for testing");
+    let cancel = Cancellation::new();
     let dir = test_tmp_dir("ftyp_fail");
     let path = Path::new(&dir).join("broken.m4a");
     std::fs::write(&path, b"\x00\x00\x00\x20ftypisom\x00\x00\x00\x00isomiso2").unwrap();
     assert!(has_media_signature(&path).is_ok());
-    assert!(probe_media(&path, &ffmpeg).is_err());
+    assert!(probe_media(&path, &ffmpeg, cancel.subscribe())
+        .await
+        .is_err());
     let _ = std::fs::remove_dir_all(&dir);
 }

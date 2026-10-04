@@ -152,3 +152,25 @@ pub fn ensure_dir(path: &Path) -> std::io::Result<PathBuf> {
     }
     Ok(cleaned)
 }
+
+pub fn sweep_stale_temp_dirs(output_dir: &Path) -> std::io::Result<usize> {
+    let entries = match std::fs::read_dir(output_dir) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(e) => return Err(e),
+    };
+    let mut removed = 0usize;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        if name.starts_with(".ghita_temp_") && std::fs::remove_dir_all(&path).is_ok() {
+            removed += 1;
+        }
+    }
+    Ok(removed)
+}
