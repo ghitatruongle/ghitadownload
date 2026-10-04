@@ -16,13 +16,14 @@ impl Transcoder {
         }
     }
 
-    pub fn transcode(
+    pub async fn transcode(
         &self,
         input_path: &Path,
         output_path: &Path,
         format: AudioFormat,
         quality: AudioQuality,
         meta: &AudioMetadata,
+        mut cancel: tokio::sync::watch::Receiver<bool>,
     ) -> Result<()> {
         if input_path == output_path {
             return Err(anyhow!("Input và output không được trùng đường dẫn"));
@@ -41,7 +42,70 @@ impl Transcoder {
             ));
         }
 
-        let mut cmd = Command::new(&self.ffmpeg_path);
+        let mut cmd = Self::build_transcode_command(
+            &self.ffmpeg_path,
+            input_path,
+            output_path,
+            format,
+            quality,
+            meta,
+        )?;
+
+        cmd.stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped());
+        let mut child = tokio::process::Command::from(cmd)
+            .spawn()
+            .map_err(|e| anyhow!("Không thể chạy FFmpeg: {}", e))?;
+        let mut stderr_pipe = child.stderr.take().expect("stderr phải được pipe");
+        let stderr_task = tokio::spawn(async move {
+            let mut buf = Vec::new();
+            let _ = tokio::io::AsyncReadExt::read_to_end(&mut stderr_pipe, &mut buf).await;
+            buf
+        });
+        let status = tokio::select! {
+            status = child.wait() => status?,
+            _ = cancel.changed() => {
+                let _ = child.kill().await;
+                stderr_task.abort();
+                return Err(anyhow!("Đã hủy"));
+            }
+        };
+        let stderr_buf = stderr_task.await.unwrap_or_default();
+        let stderr = String::from_utf8_lossy(&stderr_buf);
+        if !status.success() {
+            return Err(anyhow!("FFmpeg chuyển mã thất bại: {}", stderr.trim()));
+        }
+        if !output_path.is_file()
+            || std::fs::metadata(output_path)
+                .map(|metadata| metadata.len() == 0)
+                .unwrap_or(true)
+        {
+            return Err(anyhow!(
+                "FFmpeg không tạo được file đầu ra: {}",
+                output_path.display()
+            ));
+        }
+
+        Ok(())
+    }
+
+    pub fn build_transcode_command(
+        ffmpeg_path: &Path,
+        input_path: &Path,
+        output_path: &Path,
+        format: AudioFormat,
+        quality: AudioQuality,
+        meta: &AudioMetadata,
+    ) -> Result<Command> {
+        if !format.is_compatible_quality(quality) {
+            return Err(anyhow!(
+                "Chất lượng {:?} không tương thích với định dạng {:?}",
+                quality,
+                format
+            ));
+        }
+        let mut cmd = Command::new(ffmpeg_path);
         cmd.arg("-y").arg("-i").arg(input_path).arg("-vn");
 
         match format {
@@ -115,6 +179,16 @@ impl Transcoder {
                 };
                 cmd.arg("-b:a").arg(bitrate);
             }
+            AudioFormat::Opus => {
+                cmd.arg("-c:a").arg("libopus");
+                let bitrate = match quality {
+                    AudioQuality::Opus_192k => "192k",
+                    AudioQuality::Opus_128k => "128k",
+                    AudioQuality::Opus_96k => "96k",
+                    _ => "128k",
+                };
+                cmd.arg("-b:a").arg(bitrate);
+            }
             AudioFormat::Original | AudioFormat::Video => {
                 return Err(anyhow!("Không hỗ trợ chuyển mã cho định dạng {:?}", format));
             }
@@ -135,30 +209,15 @@ impl Transcoder {
 
         cmd.arg(output_path);
 
-        let output = cmd.output()?;
-        if !output.status.success() {
-            let err = String::from_utf8_lossy(&output.stderr);
-            return Err(anyhow!("FFmpeg chuyển mã thất bại: {}", err));
-        }
-        if !output_path.is_file()
-            || std::fs::metadata(output_path)
-                .map(|metadata| metadata.len() == 0)
-                .unwrap_or(true)
-        {
-            return Err(anyhow!(
-                "FFmpeg không tạo được file đầu ra: {}",
-                output_path.display()
-            ));
-        }
-
-        Ok(())
+        Ok(cmd)
     }
 
-    pub fn remux_copy(
+    pub async fn remux_copy(
         &self,
         input_path: &Path,
         output_path: &Path,
         meta: &AudioMetadata,
+        mut cancel: tokio::sync::watch::Receiver<bool>,
     ) -> Result<()> {
         if input_path == output_path {
             return Err(anyhow!("Input và output không được trùng đường dẫn"));
@@ -192,10 +251,30 @@ impl Transcoder {
 
         cmd.arg(output_path);
 
-        let output = cmd.output()?;
-        if !output.status.success() {
-            let err = String::from_utf8_lossy(&output.stderr);
-            return Err(anyhow!("FFmpeg đóng gói gốc thất bại: {}", err));
+        cmd.stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped());
+        let mut child = tokio::process::Command::from(cmd)
+            .spawn()
+            .map_err(|e| anyhow!("Không thể chạy FFmpeg: {}", e))?;
+        let mut stderr_pipe = child.stderr.take().expect("stderr phải được pipe");
+        let stderr_task = tokio::spawn(async move {
+            let mut buf = Vec::new();
+            let _ = tokio::io::AsyncReadExt::read_to_end(&mut stderr_pipe, &mut buf).await;
+            buf
+        });
+        let status = tokio::select! {
+            status = child.wait() => status?,
+            _ = cancel.changed() => {
+                let _ = child.kill().await;
+                stderr_task.abort();
+                return Err(anyhow!("Đã hủy"));
+            }
+        };
+        let stderr_buf = stderr_task.await.unwrap_or_default();
+        let stderr = String::from_utf8_lossy(&stderr_buf);
+        if !status.success() {
+            return Err(anyhow!("FFmpeg đóng gói gốc thất bại: {}", stderr.trim()));
         }
         if !output_path.is_file()
             || std::fs::metadata(output_path)
@@ -210,4 +289,72 @@ impl Transcoder {
 
         Ok(())
     }
+}
+
+pub fn embed_cover_ffmpeg(input: &Path, cover: &Path, ffmpeg: &Path) -> Result<PathBuf> {
+    if !input.is_file() {
+        return Err(anyhow!("Không tìm thấy file đầu vào: {}", input.display()));
+    }
+    if !cover.is_file() {
+        return Err(anyhow!("Không tìm thấy ảnh bìa: {}", cover.display()));
+    }
+    let extension = input
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or("m4a");
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let parent = input.parent().unwrap_or_else(|| Path::new("."));
+    let stem = input
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or("audio");
+    let output = parent.join(format!("{}.cover_{}.{}", stem, stamp, extension));
+    let image_codec = if extension.eq_ignore_ascii_case("flac") {
+        "png"
+    } else {
+        "mjpeg"
+    };
+    let result = Command::new(ffmpeg)
+        .arg("-y")
+        .arg("-i")
+        .arg(input)
+        .arg("-i")
+        .arg(cover)
+        .arg("-map")
+        .arg("0:a")
+        .arg("-map")
+        .arg("1:v")
+        .arg("-c:a")
+        .arg("copy")
+        .arg("-c:v")
+        .arg(image_codec)
+        .arg("-disposition:v:0")
+        .arg("attached_pic")
+        .arg(&output)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .output()
+        .map_err(|e| anyhow!("Không thể chạy FFmpeg: {}", e))?;
+    if !result.status.success() {
+        let _ = std::fs::remove_file(&output);
+        return Err(anyhow!(
+            "FFmpeg nhúng ảnh bìa thất bại: {}",
+            String::from_utf8_lossy(&result.stderr).trim()
+        ));
+    }
+    if !output.is_file()
+        || std::fs::metadata(&output)
+            .map(|metadata| metadata.len() == 0)
+            .unwrap_or(true)
+    {
+        return Err(anyhow!(
+            "FFmpeg không tạo được file đầu ra: {}",
+            output.display()
+        ));
+    }
+    Ok(output)
 }

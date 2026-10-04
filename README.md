@@ -35,12 +35,12 @@ Ghita Download được thiết kế cho sự ổn định tuyệt đối: hỗ 
 
 ## Hướng Dẫn Cài Đặt & Thiết Lập (1-Click Installer)
 
-Ghita Download cung cấp **tệp cài đặt duy nhất nằm trong thư mục `Release/` (`Release/ghitadownload_0.0.3.exe`)** tự động giải nén ứng dụng, nhúng sẵn công cụ phụ trợ, kiểm tra FFmpeg và cấu hình biến môi trường `PATH` để bạn có thể gọi từ bất kỳ thư mục nào trên máy tính.
+Ghita Download cung cấp **tệp cài đặt duy nhất nằm trong thư mục `Release/` (`Release/ghitadownload_0.0.4.exe`)** tự động giải nén ứng dụng, nhúng sẵn công cụ phụ trợ, kiểm tra FFmpeg và cấu hình biến môi trường `PATH` để bạn có thể gọi từ bất kỳ thư mục nào trên máy tính.
 
-Ghita Download `0.0.3` là bản phát hành ổn định trên kênh phát hành chính thức: mỗi phiên bản được kiểm tra tự động (format, clippy, test suite, xác minh artifact) trước khi công bố.
+Ghita Download `0.0.4` là bản phát hành ổn định trên kênh phát hành chính thức: mỗi phiên bản được kiểm tra tự động (format, clippy, test suite, xác minh artifact) trước khi công bố.
 
 ### Cách 1: Cài đặt bằng tệp trong `Release/` (Khuyên dùng)
-1. Mở thư mục **`Release/`**, nhấp đúp chuột vào tệp **`ghitadownload_0.0.3.exe`**.
+1. Mở thư mục **`Release/`**, nhấp đúp chuột vào tệp **`ghitadownload_0.0.4.exe`**.
 2. Chương trình sẽ hiển thị giao diện cài đặt tương tác:
    - Thư mục cài đặt mặc định: `%LOCALAPPDATA%\GhitaDownload`
    - Nhấn **[ENTER]** để xác nhận cài đặt ngay (hoặc dán đường dẫn thư mục tùy chỉnh nếu muốn).
@@ -64,7 +64,7 @@ Ghita Download `0.0.3` là bản phát hành ổn định trên kênh phát hàn
    ```powershell
    powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_release.ps1
    ```
-4. Chạy file `Release\ghitadownload_0.0.3.exe` vừa tạo để cài đặt vào hệ thống.
+4. Chạy file `Release\ghitadownload_0.0.4.exe` vừa tạo để cài đặt vào hệ thống.
 
 ---
 
@@ -141,11 +141,13 @@ ghitadownload --retry-failed --output "D:\Nhac"
 | `--link <URL>` (alias `--links`) | Một hoặc nhiều liên kết nguồn (lặp lại nhiều lần được). |
 | `--file <FILE>` | Tệp văn bản chứa danh sách liên kết (mỗi dòng một link). |
 | `--output <DIR>` | Thư mục lưu bài hát hoặc video. |
-| `--format <FMT>` | `mp3` \| `flac` \| `aac` \| `wav` \| `original` (M4A/Opus) \| `video` (MP4). |
-| `--quality <Q>` | Mức chất lượng: `320k`/`256k`/`192k`/`128k`/`96k`/`64k` (MP3, AAC); `24bit96k`/`24bit48k`/`16bit44k` (FLAC); `24bit48k`/`16bit44k`/`16bit22k`/`8bit11k` (WAV). |
+| `--format <FMT>` | `mp3` \| `flac` \| `aac` \| `opus` \| `wav` \| `original` (M4A/Opus) \| `video` (MP4). |
+| `--quality <Q>` | Mức chất lượng: `320k`/`256k`/`192k`/`128k`/`96k`/`64k` (MP3, AAC); `192k`/`128k`/`96k` (Opus); `24bit96k`/`24bit48k`/`16bit44k` (FLAC); `24bit48k`/`16bit44k`/`16bit22k`/`8bit11k` (WAV). |
 | `--resolution <RES>` | Trần độ phân giải video: `1080` \| `720` \| `480` \| `best`. |
 | `--keep-accents` | Giữ nguyên dấu tiếng Việt Unicode thay vì chuyển đổi sang tên tệp ASCII không dấu an toàn. |
 | `--concurrency <N>` | Số bài tải song song (mặc định 3). |
+| `--cookies <FILE>` | Tệp cookies định dạng Netscape forwarded cho yt-dlp, dùng cho nguồn yêu cầu đăng nhập. |
+| `--cookies-from-browser <BROWSER>` | Đọc cookies từ trình duyệt (`chrome`, `firefox`, `edge`, `brave`, `opera`, `safari`, `vivaldi`, `whale`...). |
 | `--retry-failed` | Đọc `failed_tasks.json` trong `--output` và tải lại các bài lỗi. |
 | `--update-ytdlp` (alias `--update-tools`) | Tải yt-dlp từ URL bất biến đã pin `2026.08.19`, kiểm tra SHA-256/PE/version rồi mới thay thế. Nguồn và hash khác phải được đặt qua `GHITA_YTDLP_SOURCE_URL` và `GHITA_YTDLP_SHA256`. |
 
@@ -159,8 +161,8 @@ Khi không còn nhu cầu sử dụng, bạn có thể gỡ cài đặt sạch s
 - **Cách 1:** Mở thư mục cài đặt `%LOCALAPPDATA%\GhitaDownload` và nhấp đúp vào **`uninstall.bat`**.
 - **Cách 2:** Chạy lệnh từ terminal; trình cài đặt đọc thư mục tùy chỉnh đã lưu, hoặc truyền rõ đường dẫn:
   ```powershell
-  Release\ghitadownload_0.0.3.exe --uninstall
-  Release\ghitadownload_0.0.3.exe --uninstall --install-dir "D:\Apps\GhitaDownload"
+  Release\ghitadownload_0.0.4.exe --uninstall
+  Release\ghitadownload_0.0.4.exe --uninstall --install-dir "D:\Apps\GhitaDownload"
   ```
 Trình gỡ cài đặt chỉ xóa các tệp Ghita/yt-dlp/FFmpeg đã biết và thư mục rỗng; không dùng xóa đệ quy. PATH người dùng chỉ được ghi sau khi đọc thành công.
 
@@ -173,4 +175,4 @@ Chạy toàn bộ test suite để kiểm tra tính năng và tính toàn vẹn:
 cargo test --locked
 ```
 
-`build_installer.bat` chỉ phát hành từ artifact tạm đã vượt kiểm tra Windows PE, có bằng chứng version nhúng `0.0.3`, có tên payload và không chứa placeholder `NO_EMBED`. Trước khi build, script xác minh `bin\\yt-dlp.exe` theo manifest `release/yt-dlp.json` và SHA-256. SHA-256 artifact được in ra khi xác minh; verifier kiểm tra bằng chứng nội tuyến, không phải chữ ký nhà phát hành. Artifact cũ trong `Release/` không bị thay thế nếu bước này thất bại.
+`build_installer.bat` chỉ phát hành từ artifact tạm đã vượt kiểm tra Windows PE, có bằng chứng version nhúng `0.0.4`, có tên payload và không chứa placeholder `NO_EMBED`. Trước khi build, script xác minh `bin\\yt-dlp.exe` theo manifest `release/yt-dlp.json` và SHA-256. SHA-256 artifact được in ra khi xác minh; verifier kiểm tra bằng chứng nội tuyến, không phải chữ ký nhà phát hành. Artifact cũ trong `Release/` không bị thay thế nếu bước này thất bại.

@@ -1,4 +1,5 @@
 use ghita_download::core::tagger::{AudioMetadata, Tagger};
+use ghita_download::core::transcoder::embed_cover_ffmpeg;
 use ghita_download::utils::env::find_ffmpeg;
 use id3::TagLike;
 use std::path::PathBuf;
@@ -61,6 +62,68 @@ async fn tag_mp3_writes_all_id3_fields() {
     assert_eq!(tag.year(), Some(2020));
     assert_eq!(tag.track(), Some(3));
     assert_eq!(tag.total_tracks(), Some(12));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn embed_cover_ffmpeg_muxes_attached_pic() {
+    let Some(ffmpeg) = find_ffmpeg() else {
+        eprintln!("Bỏ qua test: FFmpeg khả dụng qua PATH là bắt buộc");
+        return;
+    };
+    let dir = test_dir("embed_cover");
+    let flac_path = dir.join("tone.flac");
+    let flac_status = Command::new(&ffmpeg)
+        .arg("-y")
+        .arg("-f")
+        .arg("lavfi")
+        .arg("-i")
+        .arg("sine=frequency=440:duration=1")
+        .arg(&flac_path)
+        .status()
+        .expect("Failed to generate flac");
+    assert!(flac_status.success());
+
+    let png_path = dir.join("cover.png");
+    let png_status = Command::new(&ffmpeg)
+        .arg("-y")
+        .arg("-f")
+        .arg("lavfi")
+        .arg("-i")
+        .arg("color=c=red:s=64x64")
+        .arg("-frames:v")
+        .arg("1")
+        .arg(&png_path)
+        .status()
+        .expect("Failed to generate png");
+    assert!(png_status.success());
+
+    let muxed = embed_cover_ffmpeg(&flac_path, &png_path, &ffmpeg)
+        .expect("embed_cover_ffmpeg phải thành công trên flac + png");
+    assert!(muxed.exists(), "tệp mux phải tồn tại");
+    assert!(
+        std::fs::metadata(&muxed).unwrap().len() > 0,
+        "tệp mux không được rỗng"
+    );
+
+    let probe = Command::new(&ffmpeg)
+        .arg("-hide_banner")
+        .arg("-i")
+        .arg(&muxed)
+        .output()
+        .expect("Failed to probe muxed file");
+    let probe_text = String::from_utf8_lossy(&probe.stderr);
+    assert!(
+        probe_text.contains("Video:"),
+        "đầu ra phải có luồng video ảnh bìa: {}",
+        probe_text
+    );
+    assert!(
+        probe_text.contains("attached"),
+        "đầu ra phải có disposition attached pic: {}",
+        probe_text
+    );
 
     let _ = std::fs::remove_dir_all(&dir);
 }
