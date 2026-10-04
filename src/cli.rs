@@ -115,6 +115,12 @@ impl CliApp {
     pub async fn run() -> Result<()> {
         Self::print_banner();
 
+        let cancel = crate::core::cancel::init_global();
+        tokio::spawn(async move {
+            let _ = tokio::signal::ctrl_c().await;
+            cancel.cancel();
+        });
+
         let env = match Self::prepare_env().await {
             Some(env) => env,
             None => {
@@ -146,7 +152,7 @@ impl CliApp {
 
             let menu_choices = vec![
                 "🚀 Bắt đầu nhập liên kết & Tải ngay (Dùng cài đặt hiện tại)",
-                "⚙ Thay đổi cài đặt (Thư mục, Định dạng MP3/WAV/FLAC/AAC/Gốc/Video, Tiếng Việt)",
+                "⚙ Thay đổi cài đặt (Thư mục, Định dạng MP3/WAV/FLAC/AAC/Opus/Gốc/Video, Tiếng Việt)",
                 "🔁 Thử lại các bài lỗi gần nhất (failed_tasks.json)",
                 "🔄 Cập nhật công cụ yt-dlp (Lấy bản mới nhất từ GitHub)",
                 "📂 Mở thư mục lưu nhạc trong File Explorer",
@@ -192,6 +198,8 @@ impl CliApp {
                     video_resolution: active_resolution,
                     concurrency: DEFAULT_CONCURRENCY,
                     keep_accents: config.keep_accents,
+                    cookies_file: None,
+                    cookies_from_browser: None,
                 };
 
                 let batch_processor =
@@ -262,6 +270,7 @@ impl CliApp {
                     AudioFormat::Wav,
                     AudioFormat::Flac,
                     AudioFormat::Aac,
+                    AudioFormat::Opus,
                     AudioFormat::Original,
                     AudioFormat::Video,
                 ];
@@ -271,12 +280,17 @@ impl CliApp {
                 active_format = new_format;
 
                 match new_format {
-                    AudioFormat::Mp3 | AudioFormat::Wav | AudioFormat::Flac | AudioFormat::Aac => {
+                    AudioFormat::Mp3
+                    | AudioFormat::Wav
+                    | AudioFormat::Flac
+                    | AudioFormat::Aac
+                    | AudioFormat::Opus => {
                         let quality_options = match new_format {
                             AudioFormat::Mp3 => AudioQuality::all_mp3(),
                             AudioFormat::Wav => AudioQuality::all_wav(),
                             AudioFormat::Flac => AudioQuality::all_flac(),
                             AudioFormat::Aac => AudioQuality::all_aac(),
+                            AudioFormat::Opus => AudioQuality::all_opus(),
                             _ => AudioQuality::all_mp3(),
                         };
                         let new_quality =

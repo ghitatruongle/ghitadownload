@@ -1,6 +1,8 @@
 pub mod batch;
+pub mod cancel;
 pub mod config;
 pub mod downloader;
+pub mod manifest;
 pub mod platform;
 pub mod spotify;
 pub mod suno;
@@ -8,3 +10,4 @@ pub mod tagger;
 pub mod transcoder;
 pub mod verify;
 pub mod youtube;
+pub mod ytdlp;
