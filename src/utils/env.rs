@@ -1,5 +1,5 @@
 use anyhow::{anyhow, bail, Context, Result};
-use std::ffi::{OsStr, OsString};
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -35,6 +35,7 @@ fn tool_candidates(file_name: &str) -> Vec<PathBuf> {
         if let Some(parent) = exe_path.parent() {
             candidates.push(parent.join(file_name));
             candidates.push(parent.join("bin").join(file_name));
+            candidates.push(parent.join("..").join("..").join("bin").join(file_name));
         }
     }
     if let Some(dir) = dirs::data_local_dir() {
@@ -92,13 +93,6 @@ pub fn find_ytdlp() -> Option<PathBuf> {
         .iter()
         .find_map(|candidate| validate_tool(candidate, "yt-dlp").ok())
         .or_else(|| find_command("yt-dlp"))
-        .or_else(|| {
-            let local_app_data = std::env::var_os("LOCALAPPDATA")?;
-            let path = PathBuf::from(local_app_data).join(
-                "Packages/PythonSoftwareFoundation.Python.3.13_qbz5n2kfra8p0/LocalCache/local-packages/Python313/Scripts/yt-dlp.exe",
-            );
-            validate_tool(&path, "yt-dlp").ok()
-        })
 }
 
 pub fn ytdlp_update_path() -> PathBuf {
@@ -327,7 +321,8 @@ pub fn install_ffmpeg_auto() -> Result<PathBuf> {
         }
         validate_tool(&downloaded, "FFmpeg")?;
         tool_version(&downloaded)?;
-        replace_file(&downloaded, &target)?;
+        crate::utils::fs::replace_file(&downloaded, &target)
+            .with_context(|| format!("Không thể cài {}", target.display()))?;
         Ok(target)
     })();
     let _ = std::fs::remove_file(&zip);
@@ -338,34 +333,6 @@ pub fn install_ffmpeg_auto() -> Result<PathBuf> {
     let path = result?;
     tool_version(&path)?;
     Ok(path)
-}
-
-fn replace_file(source: &Path, destination: &Path) -> Result<()> {
-    if destination.exists() {
-        let backup = unique_path(
-            destination.parent().unwrap_or_else(|| Path::new(".")),
-            destination
-                .file_name()
-                .and_then(OsStr::to_str)
-                .unwrap_or("tool"),
-            "backup",
-        )?;
-        std::fs::rename(destination, &backup)
-            .with_context(|| format!("Không thể tạm thời thay thế {}", destination.display()))?;
-        match std::fs::rename(source, destination) {
-            Ok(()) => {
-                let _ = std::fs::remove_file(backup);
-                Ok(())
-            }
-            Err(error) => {
-                let _ = std::fs::rename(&backup, destination);
-                Err(error).with_context(|| format!("Không thể cài {}", destination.display()))
-            }
-        }
-    } else {
-        std::fs::rename(source, destination)
-            .with_context(|| format!("Không thể cài {}", destination.display()))
-    }
 }
 
 pub fn update_ytdlp(ytdlp_path: &Path) -> Result<String> {
@@ -393,7 +360,8 @@ pub fn update_ytdlp(ytdlp_path: &Path) -> Result<String> {
         verify_sha256(&temporary, &expected_sha256)?;
         validate_tool(&temporary, "yt-dlp tải về")?;
         let version = tool_version(&temporary)?;
-        replace_file(&temporary, ytdlp_path)?;
+        crate::utils::fs::replace_file(&temporary, ytdlp_path)
+            .with_context(|| format!("Không thể cài {}", ytdlp_path.display()))?;
         Ok(version)
     })();
     let _ = std::fs::remove_file(&temporary);

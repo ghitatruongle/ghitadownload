@@ -12,7 +12,7 @@ use crate::core::config::{AppConfig, AudioFormat, AudioQuality, DownloadSettings
     name = "ghitadownload",
     version = env!("CARGO_PKG_VERSION"),
     about = "🎵 Ghita Downloader - Tải nhạc YouTube, Spotify, SoundCloud, Bandcamp, Suno AI, TikTok, Facebook, Instagram, Threads",
-    long_about = "🎵 Ghita Downloader (CLI)\n\nSử dụng:\n  ghitadownload                        Khởi động giao diện tương tác\n  ghitadownload --version              Xem phiên bản hiện tại\n  ghitadownload --help                 Xem trợ giúp đầy đủ\n\nChế độ tải nhanh (headless):\n  ghitadownload --link <URL> [<URL>...] --output <THƯ_MỤC> --format mp3|wav|original|video --quality 320k\n  ghitadownload --file links.txt --format original\n  ghitadownload --retry-failed --output <THƯ_MỤC_CHỨA_failed_tasks.json>"
+    long_about = "🎵 Ghita Downloader (CLI)\n\nSử dụng:\n  ghitadownload                        Khởi động giao diện tương tác\n  ghitadownload --version              Xem phiên bản hiện tại\n  ghitadownload --help                 Xem trợ giúp đầy đủ\n\nChế độ tải nhanh (headless):\n  ghitadownload --link <URL> [<URL>...] --output <THƯ_MỤC> --format mp3|wav|flac|aac|opus|original|video --quality 320k\n  ghitadownload --file links.txt --format original\n  ghitadownload --retry-failed --output <THƯ_MỤC_CHỨA_failed_tasks.json>"
 )]
 pub struct CliArgs {
     #[arg(long = "link", visible_alias = "links", num_args = 1.., value_name = "URL")]
@@ -44,6 +44,47 @@ pub struct CliArgs {
 
     #[arg(long = "keep-accents")]
     pub keep_accents: bool,
+
+    #[arg(long = "cookies", visible_alias = "cookies-file", value_name = "FILE")]
+    pub cookies: Option<PathBuf>,
+
+    #[arg(long = "cookies-from-browser", value_name = "BROWSER")]
+    pub cookies_from_browser: Option<String>,
+}
+
+pub const SUPPORTED_COOKIES_BROWSERS: &[&str] = &[
+    "brave", "chrome", "chromium", "edge", "firefox", "opera", "safari", "vivaldi", "whale",
+];
+
+pub fn validate_cookie_args(
+    cookies: &Option<PathBuf>,
+    from_browser: &Option<String>,
+) -> anyhow::Result<()> {
+    if let Some(path) = cookies {
+        let metadata = std::fs::metadata(path).map_err(|error| {
+            anyhow::anyhow!("Không đọc được tệp cookies {}: {}", path.display(), error)
+        })?;
+        if !metadata.is_file() {
+            return Err(anyhow::anyhow!(
+                "Tệp cookies không hợp lệ: {}",
+                path.display()
+            ));
+        }
+        std::fs::File::open(path).map_err(|error| {
+            anyhow::anyhow!("Không mở được tệp cookies {}: {}", path.display(), error)
+        })?;
+    }
+    if let Some(browser) = from_browser {
+        let normalized = browser.trim().to_ascii_lowercase();
+        if !SUPPORTED_COOKIES_BROWSERS.contains(&normalized.as_str()) {
+            return Err(anyhow::anyhow!(
+                "Trình duyệt cookies không hỗ trợ: {} (chấp nhận: {})",
+                browser,
+                SUPPORTED_COOKIES_BROWSERS.join(", ")
+            ));
+        }
+    }
+    Ok(())
 }
 
 impl CliArgs {
@@ -58,6 +99,8 @@ impl CliArgs {
             || self.resolution.is_some()
             || self.concurrency.is_some()
             || self.keep_accents
+            || self.cookies.is_some()
+            || self.cookies_from_browser.is_some()
     }
 
     pub fn validate(&self) -> Result<(), String> {
@@ -70,7 +113,9 @@ impl CliArgs {
                 || self.resolution.is_some()
                 || self.concurrency.is_some()
                 || self.retry_failed
-                || self.keep_accents;
+                || self.keep_accents
+                || self.cookies.is_some()
+                || self.cookies_from_browser.is_some();
             return if has_conflict {
                 Err("--update-ytdlp phải được chạy riêng, không kết hợp thao tác tải hoặc tùy chọn khác".to_string())
             } else {
@@ -89,7 +134,9 @@ impl CliArgs {
                 || self.quality.is_some()
                 || self.resolution.is_some()
                 || self.concurrency.is_some()
-                || self.keep_accents;
+                || self.keep_accents
+                || self.cookies.is_some()
+                || self.cookies_from_browser.is_some();
             return if has_conflict {
                 Err("--retry-failed chỉ chấp nhận --output và không được kết hợp nguồn hoặc tùy chọn định dạng".to_string())
             } else {
@@ -116,6 +163,10 @@ impl CliArgs {
             }
         }
 
+        if let Err(error) = validate_cookie_args(&self.cookies, &self.cookies_from_browser) {
+            return Err(error.to_string());
+        }
+
         if self.resolution.is_some() && self.format.is_none() {
             return Err("--resolution yêu cầu --format video".to_string());
         }
@@ -124,7 +175,7 @@ impl CliArgs {
             let quality = value.parse::<AudioQuality>()?;
             if let Some(format_value) = self.format.as_deref() {
                 let format = format_value.parse::<AudioFormat>()?;
-                if !format.is_compatible_quality(quality) {
+                if format.equivalent_quality(quality).is_none() {
                     return Err(format!(
                         "Chất lượng {} không tương thích với định dạng {}",
                         value.to_ascii_lowercase(),
@@ -150,6 +201,12 @@ impl CliArgs {
     }
 
     pub async fn run_headless(&self) -> i32 {
+        let cancel = crate::core::cancel::init_global();
+        tokio::spawn(async move {
+            let _ = tokio::signal::ctrl_c().await;
+            cancel.cancel();
+        });
+
         if let Err(message) = self.validate() {
             eprintln!("❌ {message}");
             return 1;
@@ -241,7 +298,17 @@ impl CliArgs {
             };
             let quality = match self.quality.as_deref() {
                 Some(value) => match value.parse::<AudioQuality>() {
-                    Ok(quality) => Some(quality),
+                    Ok(quality) => {
+                        let Some(coerced) = format.equivalent_quality(quality) else {
+                            eprintln!(
+                                "❌ Chất lượng {} không tương thích với định dạng {}",
+                                value.to_ascii_lowercase(),
+                                format.to_string().to_ascii_lowercase()
+                            );
+                            return 1;
+                        };
+                        Some(coerced)
+                    }
                     Err(error) => {
                         eprintln!("❌ {error}");
                         return 1;
@@ -249,21 +316,12 @@ impl CliArgs {
                 },
                 None => match format {
                     AudioFormat::Original | AudioFormat::Video => None,
-                    _ => Some(
-                        config
-                            .last_quality
-                            .filter(|quality| format.is_compatible_quality(*quality))
-                            .unwrap_or_else(|| format.default_quality()),
-                    ),
+                    _ => config
+                        .last_quality
+                        .and_then(|quality| format.equivalent_quality(quality))
+                        .or_else(|| Some(format.default_quality())),
                 },
             };
-            if quality.is_some_and(|quality| !format.is_compatible_quality(quality)) {
-                eprintln!(
-                    "❌ Chất lượng đã chọn không tương thích với định dạng {}",
-                    format.to_string().to_ascii_lowercase()
-                );
-                return 1;
-            }
             let video_resolution = if format == AudioFormat::Video {
                 match self.resolution.as_deref() {
                     Some("best") | Some("max") | Some("BEST") | Some("MAX") => None,
@@ -286,6 +344,8 @@ impl CliArgs {
                 video_resolution,
                 concurrency,
                 keep_accents: self.keep_accents || config.keep_accents,
+                cookies_file: self.cookies.clone(),
+                cookies_from_browser: self.cookies_from_browser.clone(),
             };
             let processor = BatchProcessor::new(
                 settings.clone(),

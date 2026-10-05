@@ -1,5 +1,32 @@
 # Changelog
 
+## [0.0.4] - 2026-10-04
+
+### Added
+- Suno playlist pagination collecting every page of clips with deduplication by clip id.
+- Ctrl+C cancellation that kills child yt-dlp/FFmpeg processes, marks unfinished tasks as failed, and still writes the retry queue.
+- `--cookies <file>` and `--cookies-from-browser <browser>` flags forwarded to yt-dlp for login-gated sources.
+- `--format opus` output with `192k`/`128k`/`96k` quality options.
+- Cover art and metadata embedding for FLAC and M4A (AAC) outputs in addition to MP3.
+- JSON manifest `ghita_manifest_<timestamp>.json` written after every batch listing per-task status and output paths.
+- Stale `.ghita_temp_*` directory sweep at batch start.
+- Backoff with jitter between every yt-dlp retry attempt, and a shared HTTP retry helper with exponential backoff for Spotify/Suno 429 and timeout responses.
+- Shared `utils/fs::replace_file`, shared HTTP client in `utils/http`, yt-dlp argument constants in `core/ytdlp`, and a `build_task` helper replacing six duplicated task literals.
+- Info line when a local `ghita_config.json` overrides the global configuration.
+- CI hardening: `cargo audit` job, yt-dlp download cache, installer smoke check, CHANGELOG/tag cross-check, and Dependabot for cargo and GitHub Actions.
+
+### Changed
+- Replaced the nested `current_thread` runtime inside the Suno decrypt blocking task with a direct async call.
+- JoinError mapping records the exact failed task index instead of the first unfinished slot.
+- Removed the hard-coded Microsoft Store Python path from yt-dlp discovery; installed locations and `PATH` remain supported.
+
+### Release artifact
+- `Release/ghitadownload_0.0.4.exe`
+- SHA-256: `397D03FF55F0188F80AD7BBE1FFA7C2288D008DDECFAA5F11C5783D5C00ADE26`
+
+### Compatibility
+- Existing CLI flags, format/quality names, exit codes, and `AppConfig`/`FailedQueue` JSON remain compatible. `--format opus` does not change defaults of existing formats.
+
 ## [0.0.3] - 2026-10-01
 
 ### Added
@@ -17,6 +44,10 @@
 - Promoted the release channel from `0.0.3-beta` to stable `0.0.3`.
 
 ### Fixed
+- Depth-based qualities now coerce across WAV and FLAC: `--format flac --quality 24bit48k` / `16bit44k` and `--format wav --quality flac24bit48k` work as documented instead of being rejected with an incompatibility error.
+- Suno failures now surface the real cause: when the Suno clip API returns a non-success status, the resulting error includes the actual HTTP status code and a region/IP or proxy hint instead of silently falling through to a misleading yt-dlp DRM error.
+- yt-dlp discovery now tries the development repository payload (`<exe>/../../bin/yt-dlp.exe`) before previously installed copies, so a stale helper left by an older install (or a silent-exiting stub) can no longer break every download with an empty error; the official pinned executable is preferred in development runs and the installed copy remains first for installed layouts.
+- Plain bitrate qualities now coerce to the matching variant of the chosen format: `--format opus --quality 128k` and `--format aac --quality 256k` work as documented instead of being rejected with an incompatibility error; only MP3 accepted plain bitrates before. Out-of-range combinations (e.g. `64k` for Opus, `320k` for FLAC) are still rejected, and the saved last quality is coerced the same way.
 - Aligned the pinned yt-dlp SHA-256 with the official `2026.08.19` release artifact (`66674953fe251b89f4d08c5f0e35e0728679bd67ab3d7d05c0562af101dd3e7a`). The previous pin matched a non-official 108 KB payload while the manifest URL serves the official executable, so CI verification and `--update-ytdlp` would both reject the official file; the bundled payload is now the official executable and all three pins (app constant, manifest, and SHA file) agree.
 - Hoisted the Suno UUID regex out of the per-download verification loop and replaced manual character comparisons flagged by clippy.
 - Per-task and resolve-stage logs are now always printed when the output is piped or redirected (headless, CI, log files); previously indicatif dropped them on hidden draw targets, contradicting the headless logging guarantee.

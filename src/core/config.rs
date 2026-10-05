@@ -8,6 +8,7 @@ pub enum AudioFormat {
     Wav,
     Flac,
     Aac,
+    Opus,
     Original,
     Video,
 }
@@ -31,6 +32,10 @@ impl fmt::Display for AudioFormat {
                 f,
                 "AAC/M4A (.m4a) - Chuẩn nén cao cấp, tối ưu cho iPhone/Mac/Apple Music"
             ),
+            AudioFormat::Opus => write!(
+                f,
+                "OPUS (.opus) - Nén Opus mở, chất lượng cao ở dung lượng nhỏ"
+            ),
             AudioFormat::Original => write!(
                 f,
                 "ORIGINAL (M4A/Opus) - Giữ nguyên luồng âm thanh gốc, không chuyển mã"
@@ -52,10 +57,11 @@ impl std::str::FromStr for AudioFormat {
             "wav" => Ok(AudioFormat::Wav),
             "flac" => Ok(AudioFormat::Flac),
             "aac" => Ok(AudioFormat::Aac),
-            "original" | "m4a" | "opus" => Ok(AudioFormat::Original),
+            "opus" => Ok(AudioFormat::Opus),
+            "original" | "m4a" => Ok(AudioFormat::Original),
             "video" | "mp4" => Ok(AudioFormat::Video),
             other => Err(format!(
-                "Định dạng không hợp lệ: {} (chấp nhận: mp3, wav, flac, aac, original, video)",
+                "Định dạng không hợp lệ: {} (chấp nhận: mp3, wav, flac, aac, opus, original, video)",
                 other
             )),
         }
@@ -69,6 +75,7 @@ impl AudioFormat {
             AudioFormat::Wav => AudioQuality::Wav_24bit_48k,
             AudioFormat::Flac => AudioQuality::Flac_24bit_96k,
             AudioFormat::Aac => AudioQuality::Aac_256k,
+            AudioFormat::Opus => AudioQuality::Opus_128k,
             AudioFormat::Original | AudioFormat::Video => AudioQuality::Mp3_320k,
         }
     }
@@ -104,7 +111,66 @@ impl AudioFormat {
                     | AudioQuality::Aac_192k
                     | AudioQuality::Aac_128k
             ),
+            AudioFormat::Opus => matches!(
+                quality,
+                AudioQuality::Opus_192k | AudioQuality::Opus_128k | AudioQuality::Opus_96k
+            ),
             AudioFormat::Original | AudioFormat::Video => false,
+        }
+    }
+
+    pub fn equivalent_quality(self, quality: AudioQuality) -> Option<AudioQuality> {
+        if self.is_compatible_quality(quality) {
+            return Some(quality);
+        }
+        let depth_mapped = match (self, quality) {
+            (AudioFormat::Flac, AudioQuality::Wav_24bit_48k) => Some(AudioQuality::Flac_24bit_48k),
+            (AudioFormat::Flac, AudioQuality::Wav_16bit_44k) => Some(AudioQuality::Flac_16bit_44k),
+            (AudioFormat::Wav, AudioQuality::Flac_24bit_48k) => Some(AudioQuality::Wav_24bit_48k),
+            (AudioFormat::Wav, AudioQuality::Flac_16bit_44k) => Some(AudioQuality::Wav_16bit_44k),
+            _ => None,
+        };
+        if depth_mapped.is_some() {
+            return depth_mapped;
+        }
+        let kbps = match quality {
+            AudioQuality::Mp3_320k | AudioQuality::Aac_320k => 320,
+            AudioQuality::Mp3_256k | AudioQuality::Aac_256k => 256,
+            AudioQuality::Mp3_192k | AudioQuality::Aac_192k | AudioQuality::Opus_192k => 192,
+            AudioQuality::Mp3_128k | AudioQuality::Aac_128k | AudioQuality::Opus_128k => 128,
+            AudioQuality::Mp3_96k | AudioQuality::Opus_96k => 96,
+            AudioQuality::Mp3_64k => 64,
+            _ => return None,
+        };
+        let mapped = match self {
+            AudioFormat::Mp3 => match kbps {
+                320 => AudioQuality::Mp3_320k,
+                256 => AudioQuality::Mp3_256k,
+                192 => AudioQuality::Mp3_192k,
+                128 => AudioQuality::Mp3_128k,
+                96 => AudioQuality::Mp3_96k,
+                64 => AudioQuality::Mp3_64k,
+                _ => return None,
+            },
+            AudioFormat::Aac => match kbps {
+                320 => AudioQuality::Aac_320k,
+                256 => AudioQuality::Aac_256k,
+                192 => AudioQuality::Aac_192k,
+                128 => AudioQuality::Aac_128k,
+                _ => return None,
+            },
+            AudioFormat::Opus => match kbps {
+                192 => AudioQuality::Opus_192k,
+                128 => AudioQuality::Opus_128k,
+                96 => AudioQuality::Opus_96k,
+                _ => return None,
+            },
+            _ => return None,
+        };
+        if self.is_compatible_quality(mapped) {
+            Some(mapped)
+        } else {
+            None
         }
     }
 
@@ -113,7 +179,9 @@ impl AudioFormat {
             AudioFormat::Mp3 => "mp3",
             AudioFormat::Wav => "wav",
             AudioFormat::Flac => "flac",
-            AudioFormat::Aac | AudioFormat::Original => "m4a",
+            AudioFormat::Aac => "m4a",
+            AudioFormat::Opus => "opus",
+            AudioFormat::Original => "m4a",
             AudioFormat::Video => "mp4",
         }
     }
@@ -142,6 +210,10 @@ pub enum AudioQuality {
     Aac_256k,
     Aac_192k,
     Aac_128k,
+
+    Opus_192k,
+    Opus_128k,
+    Opus_96k,
 }
 
 impl AudioQuality {
@@ -179,6 +251,14 @@ impl AudioQuality {
             AudioQuality::Aac_256k,
             AudioQuality::Aac_192k,
             AudioQuality::Aac_128k,
+        ]
+    }
+
+    pub fn all_opus() -> Vec<AudioQuality> {
+        vec![
+            AudioQuality::Opus_192k,
+            AudioQuality::Opus_128k,
+            AudioQuality::Opus_96k,
         ]
     }
 
@@ -255,6 +335,17 @@ impl fmt::Display for AudioQuality {
             AudioQuality::Aac_128k => {
                 write!(f, "128 kbps [Tiết kiệm] - Nhẹ, tiết kiệm dung lượng")
             }
+
+            AudioQuality::Opus_192k => {
+                write!(f, "192 kbps [Chất lượng cao] - Opus chuẩn nghe hằng ngày")
+            }
+            AudioQuality::Opus_128k => write!(
+                f,
+                "128 kbps [Cân bằng] - Opus dung lượng vừa phải, chất lượng tốt"
+            ),
+            AudioQuality::Opus_96k => {
+                write!(f, "96 kbps [Tiết kiệm] - Opus nhẹ, phù hợp pod/nhạc nền")
+            }
         }
     }
 }
@@ -285,6 +376,10 @@ impl std::str::FromStr for AudioQuality {
             "aac192k" => Ok(AudioQuality::Aac_192k),
             "aac128k" => Ok(AudioQuality::Aac_128k),
 
+            "opus192k" => Ok(AudioQuality::Opus_192k),
+            "opus128k" => Ok(AudioQuality::Opus_128k),
+            "opus96k" => Ok(AudioQuality::Opus_96k),
+
             other => Err(format!("Chất lượng không hợp lệ: {}", other)),
         }
     }
@@ -305,6 +400,10 @@ pub struct DownloadSettings {
     pub concurrency: usize,
     #[serde(default)]
     pub keep_accents: bool,
+    #[serde(default)]
+    pub cookies_file: Option<PathBuf>,
+    #[serde(default)]
+    pub cookies_from_browser: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -338,34 +437,6 @@ impl Default for AppConfig {
     }
 }
 
-fn replace_config_file(source: &Path, destination: &Path) -> std::io::Result<()> {
-    match std::fs::rename(source, destination) {
-        Ok(()) => Ok(()),
-        Err(_) if destination.exists() => {
-            let backup = destination.with_extension(format!(
-                "json.{}.{}.bak",
-                std::process::id(),
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_nanos()
-            ));
-            std::fs::rename(destination, &backup)?;
-            match std::fs::rename(source, destination) {
-                Ok(()) => {
-                    let _ = std::fs::remove_file(backup);
-                    Ok(())
-                }
-                Err(error) => {
-                    let _ = std::fs::rename(&backup, destination);
-                    Err(error)
-                }
-            }
-        }
-        Err(error) => Err(error),
-    }
-}
-
 impl AppConfig {
     fn local_config_path() -> PathBuf {
         PathBuf::from("ghita_config.json")
@@ -382,6 +453,17 @@ impl AppConfig {
     pub fn config_file_path() -> PathBuf {
         let local = Self::local_config_path();
         if local.exists() {
+            let global = Self::global_config_path();
+            if global.exists() {
+                static OVERRIDE_NOTIFIED: std::sync::Once = std::sync::Once::new();
+                OVERRIDE_NOTIFIED.call_once(|| {
+                    println!(
+                        "Đang dùng cấu hình cục bộ {} thay cho cấu hình chung {}",
+                        local.display(),
+                        global.display()
+                    );
+                });
+            }
             local
         } else {
             Self::global_config_path()
@@ -503,7 +585,7 @@ impl AppConfig {
                 temporary.display()
             ));
         }
-        if let Err(error) = replace_config_file(&temporary, path) {
+        if let Err(error) = crate::utils::fs::replace_file(&temporary, path) {
             let _ = std::fs::remove_file(&temporary);
             return Err(format!("Không lưu cấu hình {}: {error}", path.display()));
         }

@@ -1,12 +1,14 @@
 use anyhow::{anyhow, Result};
 use colored::Colorize;
 use indicatif::{MultiProgress, ProgressBar};
+use std::future::Future;
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::Semaphore;
-use tokio::task::JoinSet;
+use tokio::task::{JoinError, JoinSet};
 
+use crate::core::cancel::{global, Cancellation};
 use crate::core::tagger::Tagger;
 use crate::utils::file_helper::ensure_dir;
 
@@ -27,6 +29,7 @@ impl BatchProcessor {
         }
 
         let clean_output_dir = ensure_dir(&self.settings.output_dir)?;
+        let _ = crate::utils::file_helper::sweep_stale_temp_dirs(&clean_output_dir);
         let temp_dir = create_execution_temp_dir(&clean_output_dir)?;
 
         println!(
@@ -51,6 +54,9 @@ impl BatchProcessor {
         let ffmpeg = self.ffmpeg_path.clone();
         let has_node = self.has_node;
         let total = tasks.len();
+        let cancel = Cancellation::new();
+        let global_cancel = global();
+        let mut global_rx = global_cancel.subscribe();
 
         let mut set = JoinSet::new();
 
@@ -64,78 +70,107 @@ impl BatchProcessor {
             let ffmpeg = ffmpeg.clone();
             let temp_dir = temp_dir.clone();
             let out_dir = clean_output_dir.clone();
+            let cancel = cancel.clone();
 
             set.spawn(async move {
                 let _permit = match semaphore.acquire_owned().await {
                     Ok(p) => p,
                     Err(_) => {
-                        return TaskOutcome {
+                        return Ok(TaskOutcome {
                             ok: false,
                             logs: vec![format!("    {} Mất khóa điều phối tác vụ", "✖".red())],
                             task,
                             task_index: index,
-                        };
+                        });
                     }
                 };
 
+                if cancel.is_cancelled() || global().is_cancelled() {
+                    return Ok(TaskOutcome {
+                        ok: false,
+                        logs: vec![format!("    {} {}", "✖".red(), "Đã hủy")],
+                        task,
+                        task_index: index,
+                    });
+                }
+
                 let handle = multi.add(ProgressBar::new(0));
-                process_task(
-                    task,
+                indexed_spawn(
                     index,
-                    total,
-                    handle,
-                    TaskContext {
-                        settings,
-                        ytdlp,
-                        ffmpeg,
-                        tagger,
-                        has_node,
-                        temp_dir,
-                        out_dir,
-                    },
+                    process_task(
+                        task,
+                        index,
+                        total,
+                        handle,
+                        TaskContext {
+                            settings,
+                            ytdlp,
+                            ffmpeg,
+                            tagger,
+                            has_node,
+                            temp_dir,
+                            out_dir,
+                            cancel,
+                        },
+                    ),
                 )
                 .await
             });
         }
 
         let mut success_count = 0usize;
-        let mut failed_tasks: Vec<DownloadTask> = Vec::new();
-        let mut task_results: Vec<Option<Result<(), ()>>> = vec![None; total];
+        let mut failed_tasks: Vec<(usize, DownloadTask)> = Vec::new();
         let logs_to_terminal = std::io::stdout().is_terminal();
 
-        while let Some(joined) = set.join_next().await {
-            match joined {
-                Ok(outcome) => {
-                    for line in &outcome.logs {
-                        if logs_to_terminal {
-                            let _ = multi.println(line);
-                        } else {
-                            println!("{line}");
+        loop {
+            tokio::select! {
+                joined = set.join_next() => {
+                    let Some(joined) = joined else { break };
+                    match joined {
+                        Ok(Ok(outcome)) => {
+                            for line in &outcome.logs {
+                                if logs_to_terminal {
+                                    let _ = multi.println(line);
+                                } else {
+                                    println!("{line}");
+                                }
+                            }
+                            if outcome.ok {
+                                success_count += 1;
+                            } else {
+                                failed_tasks.push((outcome.task_index, outcome.task));
+                            }
+                        }
+                        Ok(Err((index, e))) => {
+                            let message = format!("    Lỗi tác vụ {}: {}", index + 1, e);
+                            if logs_to_terminal {
+                                let _ = multi.println(format!("{}", message.red()));
+                            } else {
+                                println!("{}", message.red());
+                            }
+                            failed_tasks.push((index, tasks[index].clone()));
+                        }
+                        Err(e) => {
+                            let message = format!("    Lỗi điều phối tác vụ: {}", e);
+                            if logs_to_terminal {
+                                let _ = multi.println(format!("{}", message.red()));
+                            } else {
+                                println!("{}", message.red());
+                            }
                         }
                     }
-                    task_results[outcome.task_index] = Some(Err(()));
-                    if outcome.ok {
-                        success_count += 1;
-                        task_results[outcome.task_index] = Some(Ok(()));
-                    } else {
-                        failed_tasks.push(outcome.task);
-                    }
                 }
-                Err(e) => {
-                    let message = format!("    Lỗi tác vụ: {}", e);
-                    if logs_to_terminal {
-                        let _ = multi.println(format!("{}", message.red()));
-                    } else {
-                        println!("{}", message.red());
-                    }
-                    let missing = task_results.iter().position(|result| result.is_none());
-                    if let Some(index) = missing {
-                        task_results[index] = Some(Err(()));
-                        failed_tasks.push(tasks[index].clone());
+                changed = global_rx.changed() => {
+                    if changed.is_ok() && *global_rx.borrow() {
+                        cancel.cancel();
                     }
                 }
             }
         }
+
+        failed_tasks.sort_by_key(|(index, _)| *index);
+        let failed_tasks: Vec<DownloadTask> =
+            failed_tasks.into_iter().map(|(_, task)| task).collect();
 
         if !failed_tasks.is_empty() {
             let queue = FailedQueue {
@@ -146,7 +181,7 @@ impl BatchProcessor {
             let temp_queue_path = temp_dir.join(FAILED_QUEUE_FILE);
             let queue_result = match serde_json::to_vec_pretty(&queue) {
                 Ok(json) => std::fs::write(&temp_queue_path, json)
-                    .and_then(|_| replace_file(&temp_queue_path, &queue_path)),
+                    .and_then(|_| crate::utils::fs::replace_file(&temp_queue_path, &queue_path)),
                 Err(e) => Err(std::io::Error::other(e)),
             };
             match queue_result {
@@ -174,6 +209,21 @@ impl BatchProcessor {
         }
         let _ = std::fs::remove_dir_all(&temp_dir);
 
+        let manifest_result = crate::core::manifest::write_manifest(
+            &clean_output_dir,
+            tasks,
+            &failed_tasks,
+            &settings,
+        );
+        match manifest_result {
+            Ok(path) => println!(
+                "  {} {}",
+                "Đã ghi manifest:".cyan(),
+                path.display().to_string().yellow()
+            ),
+            Err(e) => println!("{}", format!("  Không thể ghi manifest: {}", e).red()),
+        }
+
         println!("══════════════════════════════════════════════");
         println!(
             "{} Hoàn thành tải hàng loạt! Thành công: {} | Lỗi: {}",
@@ -194,31 +244,17 @@ impl BatchProcessor {
     }
 }
 
-fn replace_file(source: &Path, destination: &Path) -> std::io::Result<()> {
-    match std::fs::rename(source, destination) {
-        Ok(()) => Ok(()),
-        Err(_) if destination.exists() => {
-            let backup = destination.with_extension(format!(
-                "json.{}.{}.bak",
-                std::process::id(),
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_nanos()
-            ));
-            std::fs::rename(destination, &backup)?;
-            match std::fs::rename(source, destination) {
-                Ok(()) => {
-                    let _ = std::fs::remove_file(backup);
-                    Ok(())
-                }
-                Err(error) => {
-                    let _ = std::fs::rename(&backup, destination);
-                    Err(error)
-                }
-            }
-        }
-        Err(error) => Err(error),
+pub(crate) async fn indexed_spawn<F>(
+    index: usize,
+    future: F,
+) -> std::result::Result<F::Output, (usize, JoinError)>
+where
+    F: Future + Send + 'static,
+    F::Output: Send + 'static,
+{
+    match tokio::spawn(future).await {
+        Ok(output) => Ok(output),
+        Err(e) => Err((index, e)),
     }
 }
 
@@ -236,4 +272,51 @@ fn create_execution_temp_dir(output_dir: &Path) -> Result<PathBuf> {
         }
     }
     Err(anyhow!("Không thể tạo thư mục tạm duy nhất"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::indexed_spawn;
+
+    #[tokio::test]
+    async fn indexed_spawn_returns_output_on_success() {
+        let result = indexed_spawn(3, async move { 42u32 }).await;
+        assert_eq!(result.unwrap(), 42);
+    }
+
+    #[tokio::test]
+    async fn indexed_spawn_maps_panic_to_task_index() {
+        let result = indexed_spawn(2, async move { panic!("boom") }).await;
+        let (index, error) = result.unwrap_err();
+        assert_eq!(index, 2);
+        assert!(error.is_panic());
+    }
+
+    #[tokio::test]
+    async fn indexed_spawn_preserves_distinct_indices() {
+        let mut set = tokio::task::JoinSet::new();
+        for index in 0..3usize {
+            set.spawn(async move {
+                if index == 1 {
+                    indexed_spawn(index, async move { panic!("fail") }).await
+                } else {
+                    indexed_spawn(index, async move { index }).await
+                }
+            });
+        }
+        let mut panicked = Vec::new();
+        let mut succeeded = Vec::new();
+        while let Some(joined) = set.join_next().await {
+            match joined.unwrap() {
+                Ok(value) => succeeded.push(value),
+                Err((index, error)) => {
+                    assert!(error.is_panic());
+                    panicked.push(index);
+                }
+            }
+        }
+        succeeded.sort_unstable();
+        assert_eq!(succeeded, vec![0, 2]);
+        assert_eq!(panicked, vec![1]);
+    }
 }
