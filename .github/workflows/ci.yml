@@ -33,6 +33,24 @@ jobs:
       - name: Test suite
         run: cargo test --locked --all-targets
 
+  linux-check:
+    name: cargo check (linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Rust toolchain (rust-toolchain.toml)
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install OpenSSL development headers
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends pkg-config libssl-dev
+
+      - name: Check (all targets)
+        run: cargo check --locked --all-targets
+
   audit:
     name: cargo audit (ubuntu)
     runs-on: ubuntu-latest

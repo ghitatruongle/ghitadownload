@@ -3,6 +3,7 @@ pub mod cancel;
 pub mod config;
 pub mod downloader;
 pub mod manifest;
+pub mod matching;
 pub mod platform;
 pub mod spotify;
 pub mod suno;

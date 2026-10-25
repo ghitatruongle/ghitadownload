@@ -1,6 +1,7 @@
 @echo off
 setlocal
 chcp 65001 >nul
+if not defined CARGO_BUILD_JOBS set "CARGO_BUILD_JOBS=2"
 echo ==================================================================
 echo   ĐANG BIÊN DỊCH GHITA DOWNLOADER VÀ TỆP CÀI ĐẶT SETUP.EXE
 echo ==================================================================
@@ -29,7 +30,7 @@ if %ERRORLEVEL% neq 0 (
     echo [LỖI] Clippy phát hiện cảnh báo hoặc lỗi.
     exit /b 1
 )
-cargo test --locked --all-targets
+cargo test --locked --all-targets -- --test-threads=2
 if %ERRORLEVEL% neq 0 (
     echo [LỖI] Test suite thất bại.
     exit /b 1

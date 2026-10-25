@@ -42,6 +42,9 @@ pub struct CliArgs {
     #[arg(long = "update-ytdlp", visible_alias = "update-tools")]
     pub update_ytdlp: bool,
 
+    #[arg(long = "check-ytdlp", visible_alias = "check-tools")]
+    pub check_ytdlp: bool,
+
     #[arg(long = "keep-accents")]
     pub keep_accents: bool,
 
@@ -50,6 +53,9 @@ pub struct CliArgs {
 
     #[arg(long = "cookies-from-browser", value_name = "BROWSER")]
     pub cookies_from_browser: Option<String>,
+
+    #[arg(long)]
+    pub raw: bool,
 }
 
 pub const SUPPORTED_COOKIES_BROWSERS: &[&str] = &[
@@ -90,6 +96,7 @@ pub fn validate_cookie_args(
 impl CliArgs {
     pub fn is_headless(&self) -> bool {
         self.update_ytdlp
+            || self.check_ytdlp
             || !self.links.is_empty()
             || self.file.is_some()
             || self.retry_failed
@@ -101,6 +108,7 @@ impl CliArgs {
             || self.keep_accents
             || self.cookies.is_some()
             || self.cookies_from_browser.is_some()
+            || self.raw
     }
 
     pub fn validate(&self) -> Result<(), String> {
@@ -115,9 +123,32 @@ impl CliArgs {
                 || self.retry_failed
                 || self.keep_accents
                 || self.cookies.is_some()
-                || self.cookies_from_browser.is_some();
+                || self.cookies_from_browser.is_some()
+                || self.raw
+                || self.check_ytdlp;
             return if has_conflict {
                 Err("--update-ytdlp phải được chạy riêng, không kết hợp thao tác tải hoặc tùy chọn khác".to_string())
+            } else {
+                Ok(())
+            };
+        }
+
+        if self.check_ytdlp {
+            let has_conflict = !self.links.is_empty()
+                || self.file.is_some()
+                || self.output.is_some()
+                || self.format.is_some()
+                || self.quality.is_some()
+                || self.resolution.is_some()
+                || self.concurrency.is_some()
+                || self.retry_failed
+                || self.keep_accents
+                || self.cookies.is_some()
+                || self.cookies_from_browser.is_some()
+                || self.raw
+                || self.update_ytdlp;
+            return if has_conflict {
+                Err("--check-ytdlp phải được chạy riêng, không kết hợp thao tác tải hoặc tùy chọn khác".to_string())
             } else {
                 Ok(())
             };
@@ -136,7 +167,8 @@ impl CliArgs {
                 || self.concurrency.is_some()
                 || self.keep_accents
                 || self.cookies.is_some()
-                || self.cookies_from_browser.is_some();
+                || self.cookies_from_browser.is_some()
+                || self.raw;
             return if has_conflict {
                 Err("--retry-failed chỉ chấp nhận --output và không được kết hợp nguồn hoặc tùy chọn định dạng".to_string())
             } else {
@@ -212,6 +244,43 @@ impl CliArgs {
             return 1;
         }
 
+        if self.check_ytdlp {
+            println!(
+                "{}",
+                "⏳ Đang so sánh yt-dlp pinned với bản mới nhất trên GitHub...".cyan()
+            );
+            return match crate::utils::env::fetch_latest_ytdlp_version().await {
+                Ok(latest) => {
+                    if crate::utils::env::version_is_newer(
+                        &latest,
+                        crate::utils::env::YTDLP_PINNED_VERSION,
+                    ) {
+                        println!(
+                            "{} yt-dlp pinned {} còn cũ; bản mới nhất là {}.",
+                            "⚠".yellow(),
+                            crate::utils::env::YTDLP_PINNED_VERSION,
+                            latest.cyan().bold()
+                        );
+                        println!(
+                            "Chạy `ghitadownload --update-ytdlp` (nguồn pin nằm trong repo) hoặc đặt GHITA_YTDLP_SOURCE_URL và GHITA_YTDLP_SHA256."
+                        );
+                        1
+                    } else {
+                        println!(
+                            "{} yt-dlp pinned {} là bản mới nhất.",
+                            "✔".green().bold(),
+                            crate::utils::env::YTDLP_PINNED_VERSION
+                        );
+                        0
+                    }
+                }
+                Err(error) => {
+                    eprintln!("{} {}", "❌".red(), error);
+                    2
+                }
+            };
+        }
+
         if self.update_ytdlp {
             let path = crate::utils::env::ytdlp_update_path();
             println!("{}", "⏳ Đang kiểm tra và cập nhật yt-dlp...".cyan());
@@ -249,7 +318,7 @@ impl CliArgs {
                     content
                         .lines()
                         .map(str::trim)
-                        .filter(|line| !line.is_empty())
+                        .filter(|line| !line.is_empty() && !line.starts_with('#'))
                         .map(str::to_string),
                 ),
                 Err(error) => {
@@ -346,6 +415,7 @@ impl CliArgs {
                 keep_accents: self.keep_accents || config.keep_accents,
                 cookies_file: self.cookies.clone(),
                 cookies_from_browser: self.cookies_from_browser.clone(),
+                raw: self.raw,
             };
             let processor = BatchProcessor::new(
                 settings.clone(),

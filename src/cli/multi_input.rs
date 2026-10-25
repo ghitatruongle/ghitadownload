@@ -105,17 +105,20 @@ impl MultiLinkInput {
         cursor_char_pos: &mut usize,
         status_message: &mut Option<String>,
     ) -> Result<Option<Vec<String>>> {
-        let mut last_rendered_lines: u16 = 0;
+        let mut last_cursor_offset: Option<u16> = None;
+        let mut total_rendered_lines: u16;
 
         loop {
-            last_rendered_lines = Self::render(
+            let (cursor_row_offset, lines_drawn) = Self::render(
                 stdout,
                 links,
                 *current_idx,
                 *cursor_char_pos,
                 status_message.as_deref(),
-                last_rendered_lines,
+                last_cursor_offset,
             )?;
+            last_cursor_offset = Some(cursor_row_offset);
+            total_rendered_lines = lines_drawn;
 
             if event::poll(Duration::from_millis(200))? {
                 match event::read()? {
@@ -141,6 +144,11 @@ impl MultiLinkInput {
                                 modifiers: KeyModifiers::CONTROL,
                                 ..
                             } => {
+                                Self::move_cursor_to_bottom(
+                                    stdout,
+                                    last_cursor_offset,
+                                    total_rendered_lines,
+                                );
                                 return Ok(None);
                             }
 
@@ -278,6 +286,11 @@ impl MultiLinkInput {
                                                 .to_string(),
                                         );
                                     } else {
+                                        Self::move_cursor_to_bottom(
+                                            stdout,
+                                            last_cursor_offset,
+                                            total_rendered_lines,
+                                        );
                                         return Ok(Some(valid_links));
                                     }
                                 }
@@ -312,26 +325,41 @@ impl MultiLinkInput {
         }
     }
 
+    fn move_cursor_to_bottom(
+        stdout: &mut std::io::Stdout,
+        cursor_offset: Option<u16>,
+        total_lines: u16,
+    ) {
+        if let Some(offset) = cursor_offset {
+            let lines_from_bottom = total_lines.saturating_sub(offset + 1);
+            if lines_from_bottom > 0 {
+                let _ = execute!(stdout, cursor::MoveDown(lines_from_bottom));
+            }
+        }
+    }
+
     fn render(
         stdout: &mut std::io::Stdout,
         links: &[String],
         current_idx: usize,
         cursor_char_pos: usize,
         status_message: Option<&str>,
-        last_rendered_lines: u16,
-    ) -> Result<u16> {
+        last_cursor_offset: Option<u16>,
+    ) -> Result<(u16, u16)> {
         let (term_cols, _) = terminal::size().unwrap_or((80, 24));
         let banner_width = (term_cols as usize).clamp(40, 80);
         let max_content_width = banner_width.saturating_sub(18).max(20);
 
-        if last_rendered_lines > 0 {
+        if let Some(offset) = last_cursor_offset {
+            if offset > 0 {
+                execute!(stdout, cursor::MoveUp(offset))?;
+            }
             execute!(
                 stdout,
-                cursor::MoveUp(last_rendered_lines),
-                cursor::MoveToColumn(0)
+                cursor::MoveToColumn(0),
+                Clear(ClearType::FromCursorDown)
             )?;
         }
-        execute!(stdout, Clear(ClearType::FromCursorDown))?;
 
         let mut lines_drawn: u16 = 0;
 
@@ -457,7 +485,7 @@ impl MultiLinkInput {
         execute!(stdout, cursor::MoveToColumn(cursor_col))?;
         stdout.flush()?;
 
-        Ok(lines_drawn)
+        Ok((cursor_row_offset, lines_drawn))
     }
 
     pub fn process_links(inputs: Vec<String>) -> Vec<String> {

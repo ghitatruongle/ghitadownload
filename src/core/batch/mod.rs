@@ -39,6 +39,7 @@ struct TaskOutcome {
     logs: Vec<String>,
     task: DownloadTask,
     task_index: usize,
+    source_note: Option<String>,
 }
 
 pub struct BatchProcessor {

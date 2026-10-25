@@ -200,6 +200,7 @@ impl CliApp {
                     keep_accents: config.keep_accents,
                     cookies_file: None,
                     cookies_from_browser: None,
+                    raw: false,
                 };
 
                 let batch_processor =

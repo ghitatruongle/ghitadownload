@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.0.5-alpha] - 2026-10-15
+
+### Added
+- `--check-ytdlp` (alias `--check-tools`): compares the pinned yt-dlp version with the latest GitHub release without downloading anything; exit 0 when up to date, 1 when a newer release exists, 2 on network/API errors. The flag must run alone.
+- FFmpeg 1-click now works out of the box: when no FFmpeg is found, the installer downloads the pinned BtbN win64-gpl build (`autobuild-2026-10-07-13-07`, SHA-256 verified from the official `checksums.sha256`) unless `GHITA_FFMPEG_SOURCE_URL` / `GHITA_FFMPEG_SHA256` override the source.
+- Weekly `yt-dlp pin check` workflow (`.github/workflows/ytdlp-pin-check.yml` + `scripts/check_ytdlp_pin.ps1`): verifies the three yt-dlp pin locations stay in sync, compares the pin with upstream, and opens a reminder issue when a newer yt-dlp exists (never edits code).
+- README gained a developer "Quy Trình Bump Công Cụ" section covering the four yt-dlp pin sites and the FFmpeg pin provenance.
+- Smart search-result matching: before downloading a `ytsearch` target, the app fetches up to 8 candidates via `--flat-playlist`, scores each one against the expected title (accent-folded, noise-tag-aware bigram similarity), artist tokens, and expected duration, then downloads the best-scoring candidate directly instead of blindly taking the first search result; below the 0.5 score threshold it falls back to the original search behavior.
+- `scripts/smoke_live.ps1`: live smoke test running `--version`, `--check-ytdlp`, one real download by URL, one download by search query, and manifest verification against a temporary output directory (cleaned up on success; `-SkipDownloads`, `-KeepOutput`, `-BinaryPath` supported).
+- CI `cargo check (linux)` job (`linux-check` in `.github/workflows/ci.yml`): checks all targets with the locked dependency set on `ubuntu-latest` (with `pkg-config`/`libssl-dev` for the OpenSSL TLS backend) so Windows-only regressions in shared code are caught on every push and pull request.
+
+### Changed
+- FLAC/WAV output from lossy streaming sources (Opus/AAC/MP3) now prints a per-task warning and records `source_note` in the JSON manifest; README no longer advertises streaming-source FLAC as true lossless.
+- New `--raw` flag hands unrecognized `http(s)` URLs straight to yt-dlp without platform parsing or duration matching; without the flag, unknown links keep the previous YouTube-search behavior.
+- Legal notice: README "Lưu Ý Pháp Lý" section and a personal-use reminder printed at the end of the installer.
+- yt-dlp download retries now reuse the same output template across all three attempts (with explicit `--continue`), so a partial `.part` download resumes instead of restarting from zero on every retry.
+
+### Fixed
+- The generated `uninstall.bat` never worked: it passed `%~dp0` as a trailing argument to `powershell -Command`, which PowerShell folds into the command string, so `$args[0]` was null, `GetFullPath` threw, and the batch aborted at `if errorlevel 1` before deleting anything or cleaning the user PATH. The install dir is now embedded into the script at generation time with proper single-quote escaping, and the PATH filter normalizes forward slashes so entries recorded either way are removed.
+- Cover-art embedding for FLAC/M4A no longer blocks a tokio worker thread with a synchronous FFmpeg process; the call runs inside `spawn_blocking`.
+- Headless `--file` input now skips `#` comment lines like the interactive reader, instead of downloading them as search queries.
+
 ## [0.0.4] - 2026-10-04
 
 ### Added

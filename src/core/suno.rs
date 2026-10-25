@@ -19,6 +19,9 @@ static OG_IMAGE_RE: LazyLock<Regex> = LazyLock::new(|| {
 static MEDIA_URL_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r#"https://[^"\\]+\.(?:m4a|mp3|wav|flac|mp4|ogg|opus|webm)"#).unwrap()
 });
+static SUNO_UUID_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})").unwrap()
+});
 
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
@@ -287,6 +290,35 @@ impl SunoClient {
         shared_client()
             .cloned()
             .map_err(|error| anyhow!("Không thể tạo HTTP client Suno: {error}"))
+    }
+
+    pub async fn resolve_share_url(&self, share_url: &str) -> Result<String> {
+        let client = Self::http_client()?;
+        let resp = with_retry(|| {
+            let client = client.clone();
+            let url = share_url.to_string();
+            async move {
+                client
+                    .get(&url)
+                    .header("User-Agent", "Mozilla/5.0")
+                    .send()
+                    .await
+                    .map_err(anyhow::Error::from)
+            }
+        })
+        .await?;
+        let final_url = resp.url().as_str();
+        if let Some(caps) = SUNO_UUID_RE.captures(final_url) {
+            return Ok(caps[1].to_ascii_lowercase());
+        }
+        let text = resp.text().await.unwrap_or_default();
+        if let Some(caps) = SUNO_UUID_RE.captures(&text) {
+            return Ok(caps[1].to_ascii_lowercase());
+        }
+        Err(anyhow!(
+            "Không thể phân giải UUID từ liên kết Suno: {}",
+            share_url
+        ))
     }
 
     pub async fn fetch_track(&self, uuid: &str) -> Result<SunoTrackMeta> {

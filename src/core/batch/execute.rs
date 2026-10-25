@@ -81,6 +81,7 @@ impl BatchProcessor {
                             logs: vec![format!("    {} Mất khóa điều phối tác vụ", "✖".red())],
                             task,
                             task_index: index,
+                            source_note: None,
                         });
                     }
                 };
@@ -91,6 +92,7 @@ impl BatchProcessor {
                         logs: vec![format!("    {} {}", "✖".red(), "Đã hủy")],
                         task,
                         task_index: index,
+                        source_note: None,
                     });
                 }
 
@@ -120,6 +122,7 @@ impl BatchProcessor {
 
         let mut success_count = 0usize;
         let mut failed_tasks: Vec<(usize, DownloadTask)> = Vec::new();
+        let mut source_notes: Vec<(usize, Option<String>)> = Vec::new();
         let logs_to_terminal = std::io::stdout().is_terminal();
 
         loop {
@@ -135,6 +138,7 @@ impl BatchProcessor {
                                     println!("{line}");
                                 }
                             }
+                            source_notes.push((outcome.task_index, outcome.source_note));
                             if outcome.ok {
                                 success_count += 1;
                             } else {
@@ -214,6 +218,7 @@ impl BatchProcessor {
             tasks,
             &failed_tasks,
             &settings,
+            &source_notes,
         );
         match manifest_result {
             Ok(path) => println!(

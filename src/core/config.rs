@@ -404,6 +404,8 @@ pub struct DownloadSettings {
     pub cookies_file: Option<PathBuf>,
     #[serde(default)]
     pub cookies_from_browser: Option<String>,
+    #[serde(default)]
+    pub raw: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

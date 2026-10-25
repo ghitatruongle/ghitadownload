@@ -29,6 +29,17 @@ impl BatchProcessor {
         spinner.set_message("Đang phân tích và giải nén các liên kết...".to_string());
         spinner.enable_steady_tick(std::time::Duration::from_millis(80));
 
+        if self.settings.raw {
+            spinner_emit(
+                &spinner,
+                interactive,
+                format!(
+                    "  {} Chế độ --raw: mọi URL được chuyển thẳng cho yt-dlp, bỏ phân tích nền tảng và kiểm chứng thời lượng",
+                    "⚠".yellow()
+                ),
+            );
+        }
+
         let total_inputs = raw_inputs.len();
         for (idx, input) in raw_inputs.iter().enumerate() {
             let trimmed = input.trim();
@@ -37,6 +48,28 @@ impl BatchProcessor {
             }
 
             let step_str = format!("[{}/{}]", idx + 1, total_inputs);
+
+            if self.settings.raw && is_url_input(trimmed) {
+                spinner.set_message(format!(
+                    "{} Chế độ raw: chuyển thẳng cho yt-dlp...",
+                    step_str
+                ));
+                let title = raw_title_from_url(trimmed);
+                tasks.push(build_task(
+                    title.clone(),
+                    trimmed.to_string(),
+                    Vec::new(),
+                    None,
+                    title,
+                    vec!["Raw".to_string()],
+                    "Raw Source".to_string(),
+                    None,
+                    None,
+                    None,
+                    None,
+                ));
+                continue;
+            }
 
             match PlatformParser::parse(trimmed) {
                 UrlType::SpotifyTrack(id) => {
@@ -247,6 +280,60 @@ impl BatchProcessor {
                                 &spinner,
                                 interactive,
                                 format!("  {} Không lấy được media Suno: {}", "✖".red(), error),
+                            );
+                            tasks.push(self.fallback_task(trimmed, "Suno AI"));
+                        }
+                    }
+                }
+                UrlType::SunoShare(share_url) => {
+                    spinner.set_message(format!(
+                        "{} Đang phân giải liên kết chia sẻ Suno AI...",
+                        step_str
+                    ));
+                    match suno_client.resolve_share_url(&share_url).await {
+                        Ok(uuid) => match suno_client.fetch_track(&uuid).await {
+                            Ok(meta) => {
+                                spinner_emit(
+                                    &spinner,
+                                    interactive,
+                                    format!(
+                                        "  {} Tìm thấy bài hát Suno: {}",
+                                        "✔".green().bold(),
+                                        meta.title.cyan()
+                                    ),
+                                );
+                                let mut fallback_searches = meta.fallback_audio_urls.clone();
+                                fallback_searches
+                                    .push(format!("ytsearch1:{} - {}", meta.artist, meta.title));
+                                let expected = meta.duration_secs.map(|d| d.round() as u64);
+                                tasks.push(build_task(
+                                    meta.title.clone(),
+                                    format!("suno:{}", meta.uuid),
+                                    fallback_searches,
+                                    expected,
+                                    meta.title,
+                                    vec![meta.artist],
+                                    "Suno AI".to_string(),
+                                    None,
+                                    meta.cover_url,
+                                    None,
+                                    None,
+                                ));
+                            }
+                            Err(error) => {
+                                spinner_emit(
+                                    &spinner,
+                                    interactive,
+                                    format!("  {} Không lấy được media Suno: {}", "✖".red(), error),
+                                );
+                                tasks.push(self.fallback_task(trimmed, "Suno AI"));
+                            }
+                        },
+                        Err(error) => {
+                            spinner_emit(
+                                &spinner,
+                                interactive,
+                                format!("  {} Lỗi liên kết Suno: {}", "✖".red(), error),
                             );
                             tasks.push(self.fallback_task(trimmed, "Suno AI"));
                         }
@@ -485,6 +572,54 @@ fn spinner_emit(spinner: &ProgressBar, interactive: bool, message: String) {
     }
 }
 
+fn is_url_input(input: &str) -> bool {
+    url::Url::parse(input).is_ok_and(|u| matches!(u.scheme(), "http" | "https"))
+}
+
+pub(crate) fn raw_title_from_url(input: &str) -> String {
+    let last_segment = url::Url::parse(input)
+        .ok()
+        .and_then(|parsed| {
+            parsed
+                .path_segments()
+                .and_then(|segments| segments.rev().find(|s| !s.is_empty()))
+                .map(str::to_string)
+        })
+        .unwrap_or_default();
+    let decoded = percent_decode_segment(&last_segment);
+    let title = decoded
+        .rsplit_once('.')
+        .map(|(stem, _)| stem.to_string())
+        .filter(|stem| !stem.trim().is_empty())
+        .unwrap_or(decoded);
+    let title = title.replace(['_', '-'], " ");
+    let title = title.trim().trim_matches('.').trim().to_string();
+    if title.is_empty() {
+        "raw_track".to_string()
+    } else {
+        title
+    }
+}
+
+fn percent_decode_segment(segment: &str) -> String {
+    let bytes = segment.as_bytes();
+    let mut decoded: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%' && index + 2 < bytes.len() {
+            let hex = &segment[index + 1..index + 3];
+            if let Ok(byte) = u8::from_str_radix(hex, 16) {
+                decoded.push(byte);
+                index += 3;
+                continue;
+            }
+        }
+        decoded.push(bytes[index]);
+        index += 1;
+    }
+    String::from_utf8_lossy(&decoded).into_owned()
+}
+
 async fn resolve_youtube_playlist(
     ytdlp_path: &Path,
     has_node: bool,
@@ -553,4 +688,120 @@ async fn resolve_youtube_media(
     })
     .await
     .map_err(|error| anyhow!("Không thể đọc media YouTube: {error}"))?
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{is_url_input, raw_title_from_url};
+
+    #[test]
+    fn is_url_input_accepts_http_and_https_only() {
+        assert!(is_url_input("https://example.com/video/123"));
+        assert!(is_url_input("http://example.com/a.mp4"));
+        assert!(!is_url_input("ftp://example.com/a.mp4"));
+        assert!(!is_url_input("ytsearch1:bai hat"));
+        assert!(!is_url_input("ten bai hat khong phai link"));
+        assert!(!is_url_input(""));
+    }
+
+    #[test]
+    fn raw_title_extracts_readable_stem_from_url() {
+        assert_eq!(
+            raw_title_from_url("https://example.com/media/My_Song-Title.mp4"),
+            "My Song Title"
+        );
+        assert_eq!(
+            raw_title_from_url("https://example.com/a/b/Nguyen%20Van%20A.m4a?token=xyz"),
+            "Nguyen Van A"
+        );
+        assert_eq!(raw_title_from_url("https://example.com/"), "raw_track");
+        assert_eq!(
+            raw_title_from_url("https://example.com/video/12345"),
+            "12345"
+        );
+        assert_eq!(
+            raw_title_from_url("https://example.com/path/track.mp3#t=30"),
+            "track"
+        );
+    }
+
+    #[tokio::test]
+    async fn resolve_inputs_raw_mode_bypasses_platform_parser() {
+        use crate::core::batch::BatchProcessor;
+        use crate::core::config::{AudioFormat, DownloadSettings};
+
+        let settings = DownloadSettings {
+            output_dir: std::env::temp_dir(),
+            format: AudioFormat::Mp3,
+            quality: None,
+            video_resolution: None,
+            concurrency: 3,
+            keep_accents: false,
+            cookies_file: None,
+            cookies_from_browser: None,
+            raw: true,
+        };
+        let processor = BatchProcessor::new(
+            settings,
+            std::path::Path::new("bin/yt-dlp.exe"),
+            std::path::Path::new("ffmpeg"),
+            false,
+        );
+
+        let url = "https://khong-co-parser.example.org/video/42/Bai_Hat_La.mp4";
+        let tasks = processor
+            .resolve_inputs(&[url.to_string()])
+            .await
+            .expect("resolve_inputs raw không được lỗi");
+        assert_eq!(tasks.len(), 1);
+        let task = &tasks[0];
+        assert_eq!(
+            task.source_or_search, url,
+            "raw phải giữ nguyên URL cho yt-dlp"
+        );
+        assert!(
+            task.fallback_searches.is_empty(),
+            "raw không được thêm search dự phòng"
+        );
+        assert_eq!(
+            task.expected_duration_secs, None,
+            "raw phải bỏ qua kiểm chứng thời lượng"
+        );
+        assert_eq!(task.metadata.title, "Bai Hat La");
+        assert_eq!(task.metadata.album, "Raw Source");
+    }
+
+    #[tokio::test]
+    async fn resolve_inputs_raw_mode_keeps_non_url_as_search() {
+        use crate::core::batch::BatchProcessor;
+        use crate::core::config::{AudioFormat, DownloadSettings};
+
+        let settings = DownloadSettings {
+            output_dir: std::env::temp_dir(),
+            format: AudioFormat::Mp3,
+            quality: None,
+            video_resolution: None,
+            concurrency: 3,
+            keep_accents: false,
+            cookies_file: None,
+            cookies_from_browser: None,
+            raw: true,
+        };
+        let processor = BatchProcessor::new(
+            settings,
+            std::path::Path::new("bin/yt-dlp.exe"),
+            std::path::Path::new("ffmpeg"),
+            false,
+        );
+
+        let tasks = processor
+            .resolve_inputs(&["ten bai hat thuong".to_string()])
+            .await
+            .expect("resolve_inputs raw với text không được lỗi");
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(
+            tasks[0].source_or_search, "ytsearch1:ten bai hat thuong",
+            "raw chỉ áp dụng cho URL, text vẫn đi qua tìm kiếm"
+        );
+    }
 }

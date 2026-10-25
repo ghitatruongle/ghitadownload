@@ -10,6 +10,13 @@ static AUDIO_STREAM_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?m)Stream #\d+:\d+.*: Audio:").unwrap());
 static VIDEO_STREAM_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?m)Stream #\d+:\d+.*: Video:").unwrap());
+static AUDIO_CODEC_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r": Audio: ([A-Za-z0-9_]+)").unwrap());
+static AUDIO_BITRATE_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(\d+)\s*kb/s").unwrap());
+
+const LOSSY_CODECS: &[&str] = &[
+    "aac", "ac3", "eac3", "mp2", "mp3", "mp3float", "mp4a", "opus", "speex", "vorbis",
+];
 
 #[derive(Debug, Clone)]
 pub struct MediaInfo {
@@ -17,6 +24,50 @@ pub struct MediaInfo {
     pub size_bytes: u64,
     pub has_audio: bool,
     pub has_video: bool,
+    pub audio_codec: Option<String>,
+    pub audio_bitrate_kbps: Option<u64>,
+}
+
+pub fn is_lossy_codec(codec: &str) -> bool {
+    codec.starts_with("amr")
+        || codec.starts_with("wma")
+        || LOSSY_CODECS.contains(&codec.to_ascii_lowercase().as_str())
+}
+
+pub fn parse_audio_stream_line(line: &str) -> Option<(String, Option<u64>)> {
+    let caps = AUDIO_CODEC_RE.captures(line)?;
+    let codec = caps[1].to_ascii_lowercase();
+    let bitrate = AUDIO_BITRATE_RE
+        .captures(line)
+        .and_then(|b| b[1].parse().ok());
+    Some((codec, bitrate))
+}
+
+fn parse_audio_stream(stderr: &str) -> Option<(String, Option<u64>)> {
+    stderr.lines().find_map(|line| {
+        AUDIO_STREAM_RE
+            .is_match(line)
+            .then(|| parse_audio_stream_line(line))
+            .flatten()
+    })
+}
+
+pub fn lossy_transcode_note(
+    target_format: &str,
+    codec: Option<&str>,
+    bitrate_kbps: Option<u64>,
+) -> Option<String> {
+    let codec = codec?;
+    if !is_lossy_codec(codec) {
+        return None;
+    }
+    let bitrate_part = bitrate_kbps
+        .map(|kbps| format!(" ~{} kb/s", kbps))
+        .unwrap_or_default();
+    Some(format!(
+        "Nguồn gốc là âm thanh nén có mất dữ liệu (codec {}{}): tệp {} chỉ đóng gói nguyên bản luồng này, không phục hồi chất lượng đã mất khi nén",
+        codec, bitrate_part, target_format
+    ))
 }
 
 pub fn has_media_signature(path: &Path) -> Result<()> {
@@ -140,12 +191,18 @@ pub async fn probe_media(
     }
 
     let duration_secs = parse_duration_secs(&stderr)?;
+    let (audio_codec, audio_bitrate_kbps) = match parse_audio_stream(&stderr) {
+        Some((codec, bitrate)) => (Some(codec), bitrate),
+        None => (None, None),
+    };
 
     Ok(MediaInfo {
         duration_secs,
         size_bytes,
         has_audio,
         has_video,
+        audio_codec,
+        audio_bitrate_kbps,
     })
 }
 
