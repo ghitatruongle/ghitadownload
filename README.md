@@ -1,6 +1,6 @@
 # Ghita Download (Rust)
 
-Phần mềm tải và chuyển đổi **âm thanh và video** chất lượng cao viết bằng ngôn ngữ **Rust**. Hỗ trợ tải trích xuất âm thanh từ **YouTube**, **Spotify**, **Suno AI**, **SoundCloud**, **Bandcamp** sang định dạng **MP3, FLAC (Lossless), AAC, WAV, luồng gốc (M4A/Opus)** và tải trọn vẹn **Video MP4** từ YouTube, TikTok, Facebook, Threads với các tùy chọn chất lượng tối ưu.
+Phần mềm tải và chuyển đổi **âm thanh và video** chất lượng cao viết bằng ngôn ngữ **Rust**. Hỗ trợ tải trích xuất âm thanh từ **YouTube**, **Spotify**, **Suno AI**, **SoundCloud**, **Bandcamp** sang định dạng **MP3, FLAC, AAC, WAV, luồng gốc (M4A/Opus)** và tải trọn vẹn **Video MP4** từ YouTube, TikTok, Facebook, Threads với các tùy chọn chất lượng tối ưu.
 
 Ghita Download được thiết kế cho sự ổn định tuyệt đối: hỗ trợ tải song song đa luồng, tự động kiểm chứng thời lượng bài hát, tự động phát hiện & hỗ trợ cài đặt FFmpeg 1-click, tự cập nhật yt-dlp, hoạt động linh hoạt qua giao diện tương tác hoặc chế độ dòng lệnh (headless).
 
@@ -9,7 +9,7 @@ Ghita Download được thiết kế cho sự ổn định tuyệt đối: hỗ 
 ## Tính Năng Nổi Bật
 
 - **Định dạng âm thanh đa dạng & Chuẩn phòng thu:**
-  - **Lossless FLAC:** 24-bit 96kHz (Studio Master Hi-Res), 24-bit 48kHz (High-Res), 16-bit 44.1kHz (CD Quality Lossless).
+  - **FLAC:** 24-bit 96kHz, 24-bit 48kHz, 16-bit 44.1kHz. Lưu ý: FLAC chỉ *đóng gói không mất dữ liệu* nguồn. Với Spotify/YouTube/SoundCloud, nguồn thực tế là âm thanh nén (lossy); chất lượng không vượt nguồn. Khi phát hiện nguồn nén, ứng dụng sẽ cảnh báo và ghi `source_note` vào manifest.
   - **MP3 & AAC (.m4a):** Bitrate tùy chọn từ 64 kbps đến 320 kbps (hỗ trợ chuẩn iTunes Plus 256k).
   - **WAV & Audio Gốc:** WAV PCM nguyên bản (lên tới 24-bit 48kHz) hoặc giữ nguyên luồng M4A/Opus gốc không suy hao.
   - **Video MP4:** Tải video chất lượng cao, tùy chọn giới hạn trần độ phân giải 1080p, 720p, 480p hoặc tốt nhất (best).
@@ -21,7 +21,7 @@ Ghita Download được thiết kế cho sự ổn định tuyệt đối: hỗ 
   - **Mạng xã hội & Video ngắn:** Tải video và trích xuất âm thanh từ TikTok, Facebook Video và Threads.
 
 - **Tự động hóa & Khả năng tương thích cao:**
-  - **1-Click FFmpeg Setup:** Tự động phát hiện và hỗ trợ cài đặt công cụ giải mã FFmpeg cho máy tính mới qua winget hoặc bản static tải về tại thời điểm cài đặt.
+  - **1-Click FFmpeg Setup:** Tự động phát hiện và cài đặt FFmpeg ngay khi cài ứng dụng: tải bản static chính thức từ nguồn đã pin (BtbN FFmpeg-Builds, URL bất biến kèm SHA-256) và xác minh hash trước khi cài; có thể ghi đè bằng `GHITA_FFMPEG_SOURCE_URL` / `GHITA_FFMPEG_SHA256`.
   - **Tự cập nhật yt-dlp:** Cập nhật công cụ tải lên phiên bản mới nhất từ GitHub Releases chính thức trực tiếp trong menu hoặc qua dòng lệnh.
   - **Tùy chọn dấu tiếng Việt:** Mặc định khử dấu an toàn (`ASCII`) cho màn hình xe hơi/USB cổ điển, hoặc bật giữ nguyên Unicode tiếng Việt (`Nguyễn Văn A - Bài Hát.mp3`).
   - **Đánh số thứ tự track:** Tự động thêm tiền tố thứ tự (`01. Tên bài.mp3`) và nhúng thẻ tag ID3/Vorbis track index cho Album/Playlist.
@@ -35,19 +35,19 @@ Ghita Download được thiết kế cho sự ổn định tuyệt đối: hỗ 
 
 ## Hướng Dẫn Cài Đặt & Thiết Lập (1-Click Installer)
 
-Ghita Download cung cấp **tệp cài đặt duy nhất nằm trong thư mục `Release/` (`Release/ghitadownload_0.0.4.exe`)** tự động giải nén ứng dụng, nhúng sẵn công cụ phụ trợ, kiểm tra FFmpeg và cấu hình biến môi trường `PATH` để bạn có thể gọi từ bất kỳ thư mục nào trên máy tính.
+Ghita Download cung cấp **tệp cài đặt duy nhất nằm trong thư mục `Release/` (`Release/ghitadownload_0.0.5-alpha.exe`)** tự động giải nén ứng dụng, nhúng sẵn công cụ phụ trợ, kiểm tra FFmpeg và cấu hình biến môi trường `PATH` để bạn có thể gọi từ bất kỳ thư mục nào trên máy tính.
 
-Ghita Download `0.0.4` là bản phát hành ổn định trên kênh phát hành chính thức: mỗi phiên bản được kiểm tra tự động (format, clippy, test suite, xác minh artifact) trước khi công bố.
+Ghita Download `0.0.5-alpha` là bản phát hành ổn định trên kênh phát hành chính thức: mỗi phiên bản được kiểm tra tự động (format, clippy, test suite, xác minh artifact) trước khi công bố.
 
 ### Cách 1: Cài đặt bằng tệp trong `Release/` (Khuyên dùng)
-1. Mở thư mục **`Release/`**, nhấp đúp chuột vào tệp **`ghitadownload_0.0.4.exe`**.
+1. Mở thư mục **`Release/`**, nhấp đúp chuột vào tệp **`ghitadownload_0.0.5-alpha.exe`**.
 2. Chương trình sẽ hiển thị giao diện cài đặt tương tác:
    - Thư mục cài đặt mặc định: `%LOCALAPPDATA%\GhitaDownload`
    - Nhấn **[ENTER]** để xác nhận cài đặt ngay (hoặc dán đường dẫn thư mục tùy chỉnh nếu muốn).
 3. Trình cài đặt sẽ tự động:
    - Cài đặt `ghitadownload.exe` và alias gọi nhanh `ghita.exe`.
    - Cài đặt công cụ hỗ trợ `bin/yt-dlp.exe`.
-   - Kiểm tra FFmpeg; nếu máy chưa có, ứng dụng chỉ tự tải khi được cấu hình `GHITA_FFMPEG_SOURCE_URL` và `GHITA_FFMPEG_SHA256` với URL HTTPS bất biến. Nếu không có cấu hình, ứng dụng vẫn cài đặt được nhưng sẽ yêu cầu cài FFmpeg thủ công khi chạy.
+   - Kiểm tra FFmpeg; nếu máy chưa có, trình cài đặt tự tải FFmpeg từ nguồn đã pin kèm SHA-256 (xem *Quy Trình Bump Công Cụ* bên dưới) và chỉ cài khi hash khớp. Muốn dùng nguồn khác, đặt `GHITA_FFMPEG_SOURCE_URL` (HTTPS) và `GHITA_FFMPEG_SHA256`.
    - Lưu đường dẫn tùy chỉnh tại `%LOCALAPPDATA%\GhitaDownload\install-dir.txt` để lệnh gỡ cài đặt tìm đúng nơi đã cài.
    - **Tự động thêm đường dẫn vào biến môi trường PATH** của người dùng (không cần quyền Administrator).
 4. Nhấn **[ENTER]** để hoàn tất.
@@ -64,7 +64,7 @@ Ghita Download `0.0.4` là bản phát hành ổn định trên kênh phát hàn
    ```powershell
    powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_release.ps1
    ```
-4. Chạy file `Release\ghitadownload_0.0.4.exe` vừa tạo để cài đặt vào hệ thống.
+4. Chạy file `Release\ghitadownload_0.0.5-alpha.exe` vừa tạo để cài đặt vào hệ thống.
 
 ---
 
@@ -111,13 +111,13 @@ Ngoài giao diện tương tác, bạn có thể tải ngay bằng tham số mà
 # Tải một hoặc nhiều liên kết sang MP3 320k vào thư mục chỉ định
 ghitadownload --link "https://open.spotify.com/track/..." --link "https://youtu.be/..." --format mp3 --quality 320k --output "D:\Nhac"
 
-# Tải định dạng Lossless FLAC chuẩn phòng thu 24-bit 96kHz và giữ nguyên dấu tiếng Việt
+# Tải FLAC 24-bit 96kHz (đóng gói không mất dữ liệu từ nguồn; xem lưu ý trên) và giữ nguyên dấu tiếng Việt
 ghitadownload --link "https://open.spotify.com/album/..." --format flac --quality 24bit96k --keep-accents --output "D:\NhacLossless"
 
 # Tải AAC iTunes Plus 256k
 ghitadownload --link "https://open.spotify.com/track/..." --format aac --quality 256k --output "D:\Nhac"
 
-# Tải danh sách liên kết từ một tệp văn bản (mỗi dòng một link) sang WAV CD Lossless
+# Tải danh sách liên kết từ một tệp văn bản (mỗi dòng một link) sang WAV 16-bit 44.1kHz
 ghitadownload --file links.txt --format wav --quality 16bit44k --output "D:\Nhac"
 
 # Giữ nguyên âm thanh gốc (M4A/Opus) hoặc tải video MP4 kèm trần độ phân giải
@@ -126,6 +126,9 @@ ghitadownload --link "https://youtu.be/..." --format video --resolution 1080 --o
 
 # Cập nhật yt-dlp từ nguồn bất biến đã pin; có thể đặt URL và SHA-256 riêng qua GHITA_YTDLP_SOURCE_URL/GHITA_YTDLP_SHA256
 ghitadownload --update-ytdlp
+
+# Chỉ kiểm tra (không tải): pinned vs bản mới nhất trên GitHub; exit 0 = đã mới nhất, 1 = có bản mới, 2 = lỗi mạng/API
+ghitadownload --check-ytdlp
 
 # Đổi số bài tải song song (mặc định 3)
 ghitadownload --link "https://youtu.be/..." --format mp3 --concurrency 5 --output "D:\Nhac"
@@ -148,7 +151,9 @@ ghitadownload --retry-failed --output "D:\Nhac"
 | `--concurrency <N>` | Số bài tải song song (mặc định 3). |
 | `--cookies <FILE>` | Tệp cookies định dạng Netscape forwarded cho yt-dlp, dùng cho nguồn yêu cầu đăng nhập. |
 | `--cookies-from-browser <BROWSER>` | Đọc cookies từ trình duyệt (`chrome`, `firefox`, `edge`, `brave`, `opera`, `safari`, `vivaldi`, `whale`...). |
+| `--raw` | Chuyển thẳng mọi URL `http(s)` cho yt-dlp, bỏ qua parser nền tảng và kiểm chứng thời lượng (dùng cho trang chưa được hỗ trợ). Không áp dụng cho `--retry-failed`. |
 | `--retry-failed` | Đọc `failed_tasks.json` trong `--output` và tải lại các bài lỗi. |
+| `--check-ytdlp` (alias `--check-tools`) | So sánh yt-dlp đã pin với bản phát hành mới nhất trên GitHub, không tải gì. Chạy riêng; exit `0` khi đã mới nhất, `1` khi có bản mới, `2` khi lỗi mạng/API. |
 | `--update-ytdlp` (alias `--update-tools`) | Tải yt-dlp từ URL bất biến đã pin `2026.08.19`, kiểm tra SHA-256/PE/version rồi mới thay thế. Nguồn và hash khác phải được đặt qua `GHITA_YTDLP_SOURCE_URL` và `GHITA_YTDLP_SHA256`. |
 
 Headless không mở hộp thoại và không tự cài FFmpeg. Cần có `yt-dlp` và FFmpeg hợp lệ trước khi chạy; lỗi tham số, xung đột thao tác, định dạng/chất lượng không tương thích, độ phân giải ngoài `1080`, `720`, `480`, `best`, `--concurrency 0`, hoặc thiếu dependency đều trả mã thoát khác `0`. `--output` dùng thư mục đã lưu nếu không được chỉ định.
@@ -161,10 +166,38 @@ Khi không còn nhu cầu sử dụng, bạn có thể gỡ cài đặt sạch s
 - **Cách 1:** Mở thư mục cài đặt `%LOCALAPPDATA%\GhitaDownload` và nhấp đúp vào **`uninstall.bat`**.
 - **Cách 2:** Chạy lệnh từ terminal; trình cài đặt đọc thư mục tùy chỉnh đã lưu, hoặc truyền rõ đường dẫn:
   ```powershell
-  Release\ghitadownload_0.0.4.exe --uninstall
-  Release\ghitadownload_0.0.4.exe --uninstall --install-dir "D:\Apps\GhitaDownload"
+  Release\ghitadownload_0.0.5-alpha.exe --uninstall
+  Release\ghitadownload_0.0.5-alpha.exe --uninstall --install-dir "D:\Apps\GhitaDownload"
   ```
 Trình gỡ cài đặt chỉ xóa các tệp Ghita/yt-dlp/FFmpeg đã biết và thư mục rỗng; không dùng xóa đệ quy. PATH người dùng chỉ được ghi sau khi đọc thành công.
+
+---
+
+## Lưu Ý Pháp Lý
+
+Ghita Download là công cụ **dành cho sử dụng cá nhân**. Việc tải nội dung từ YouTube, Spotify, SoundCloud, Suno, TikTok, Facebook, Threads và các nền tảng khác có thể **vi phạm điều khoản dịch vụ** của nền tảng đó và/hoặc quyền sở hữu trí tuệ của chủ bản quyền.
+
+- Chỉ tải nội dung bạn có quyền tải (nội dung của chính bạn, nội dung được cấp phép, hoặc thuộc phạm vi công cộng).
+- Tùy chọn `--cookies` / `--cookies-from-browser` dùng tài khoản đăng nhập của bạn; nền tảng có thể hạn chế hoặc khóa tài khoản nếu phát hiện bất thường.
+- Tác giả không chịu trách nhiệm cho cách bạn sử dụng phần mềm và các hệ quả pháp lý phát sinh.
+
+Khi cài đặt xong, trình cài đặt sẽ nhắc lại các lưu ý này.
+
+---
+
+
+## Quy Trình Bump Công Cụ (Dành Cho Người Phát Triển)
+
+yt-dlp được pin ở **3 chỗ** trong repo (phải đồng bộ) + payload:
+
+1. `src/utils/env.rs` — `YTDLP_PINNED_VERSION`, `YTDLP_FALLBACK_URL`, `YTDLP_FALLBACK_SHA256`.
+2. `release/yt-dlp.json` — `version`, `url`, `sha256`.
+3. `release/yt-dlp.sha256`.
+4. `bin/yt-dlp.exe` — payload chính thức, xác minh bằng `scripts/verify_dependencies.ps1`.
+
+Workflow `yt-dlp pin check` (chạy lịch hàng tuần, `.github/workflows/ytdlp-pin-check.yml`) tự kiểm tra tính đồng bộ của các chỗ pin và so sánh với bản phát hành mới nhất của yt-dlp trên GitHub; khi có bản mới, nó mở issue nhắc bump (không tự sửa code).
+
+FFmpeg 1-click cũng dùng nguồn đã pin ở `src/utils/env.rs` (`FFMPEG_FALLBACK_URL`, `FFMPEG_FALLBACK_SHA256` — bản win64-gpl của BtbN FFmpeg-Builds, tag `autobuild-2026-10-07-13-07`, SHA-256 lấy từ tệp `checksums.sha256` chính thức của bản phát hành đó). Khi bump FFmpeg: chọn một tag `autobuild-...` cụ thể (URL bất biến), lấy SHA-256 từ `checksums.sha256` của tag đó, cập nhật cả hai hằng số; biến môi trường `GHITA_FFMPEG_SOURCE_URL` / `GHITA_FFMPEG_SHA256` vẫn ghi đè được khi chạy.
 
 ---
 
@@ -175,4 +208,10 @@ Chạy toàn bộ test suite để kiểm tra tính năng và tính toàn vẹn:
 cargo test --locked
 ```
 
-`build_installer.bat` chỉ phát hành từ artifact tạm đã vượt kiểm tra Windows PE, có bằng chứng version nhúng `0.0.4`, có tên payload và không chứa placeholder `NO_EMBED`. Trước khi build, script xác minh `bin\\yt-dlp.exe` theo manifest `release/yt-dlp.json` và SHA-256. SHA-256 artifact được in ra khi xác minh; verifier kiểm tra bằng chứng nội tuyến, không phải chữ ký nhà phát hành. Artifact cũ trong `Release/` không bị thay thế nếu bước này thất bại.
+`build_installer.bat` chỉ phát hành từ artifact tạm đã vượt kiểm tra Windows PE, có bằng chứng version nhúng `0.0.5-alpha`, có tên payload và không chứa placeholder `NO_EMBED`. Trước khi build, script xác minh `bin\\yt-dlp.exe` theo manifest `release/yt-dlp.json` và SHA-256. SHA-256 artifact được in ra khi xác minh; verifier kiểm tra bằng chứng nội tuyến, không phải chữ ký nhà phát hành. Artifact cũ trong `Release/` không bị thay thế nếu bước này thất bại.
+
+Smoke test sống (tải thật một bài qua URL và một bài qua tìm kiếm, kiểm tra manifest, tự dọn thư mục tạm):
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\smoke_live.ps1
+```
+Thêm tùy chọn: `-BinaryPath <đường_dẫn_exe>` (mặc định `target\release\ghitadownload.exe`), `-SkipDownloads` để chỉ chạy kiểm tra không tải, `-KeepOutput` để giữ thư mục kết quả.

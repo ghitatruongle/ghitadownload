@@ -278,20 +278,36 @@ fn handle_install(default_dir: &Path, args: &SetupArgs) -> Result<(), String> {
     println!("🎉 CÀI ĐẶT GHITA DOWNLOADER THÀNH CÔNG!");
     println!("📁 Vị trí cài đặt: {}", install_dir.display());
     println!("Đường dẫn tùy chỉnh đã được lưu để --uninstall xác định đúng thư mục.");
+    println!("⚖️  Chỉ tải nội dung bạn có quyền sử dụng. Tải từ nền tảng có thể vi phạm điều khoản dịch vụ của họ. Xem mục 'Lưu Ý Pháp Lý' trong README.");
     Ok(())
+}
+
+fn strip_verbatim_prefix(path: &Path) -> PathBuf {
+    let s = path.to_string_lossy();
+    if let Some(stripped) = s.strip_prefix(r"\\?\UNC\") {
+        PathBuf::from(format!(r"\\{stripped}"))
+    } else if let Some(stripped) = s.strip_prefix(r"\\?\") {
+        PathBuf::from(stripped)
+    } else {
+        path.to_path_buf()
+    }
 }
 
 fn find_existing_tool(path: &Path) -> Option<PathBuf> {
     if path.is_absolute() && path.is_file() {
-        Some(path.canonicalize().ok()?)
+        let canonical = path.canonicalize().ok()?;
+        Some(strip_verbatim_prefix(&canonical))
     } else {
         None
     }
 }
 
-fn build_uninstall_script(_install_dir: &Path) -> String {
-    "@echo off\r\nsetlocal\r\npowershell -NoProfile -ExecutionPolicy Bypass -Command \"$dir=[IO.Path]::GetFullPath($args[0]); $p=[Environment]::GetEnvironmentVariable('Path','User'); if ($null -eq $p) { exit 2 }; $root=$dir.TrimEnd('\\'); $n=($p -split ';' | Where-Object { $_ -and $_.TrimEnd('\\') -ne $root -and $_.TrimEnd('\\') -ne ($root + '\\bin').TrimEnd('\\') }) -join ';'; [Environment]::SetEnvironmentVariable('Path',$n,'User')\" \"%~dp0\"\r\nif errorlevel 1 exit /b 1\r\ndel /q \"%~dp0ghitadownload.exe\" 2>nul\r\ndel /q \"%~dp0ghita.exe\" 2>nul\r\ndel /q \"%~dp0uninstall.bat\" 2>nul\r\ndel /q \"%~dp0bin\\yt-dlp.exe\" 2>nul\r\ndel /q \"%~dp0bin\\ffmpeg.exe\" 2>nul\r\nrd \"%~dp0bin\" 2>nul\r\nrd \"%~dp0\" 2>nul\r\nif exist \"%~dp0\" exit /b 1\r\necho Da go bo Ghita khoi he thong thanh cong!\r\npause\r\n"
-        .to_string()
+fn build_uninstall_script(install_dir: &Path) -> String {
+    let dir_literal = install_dir.to_string_lossy().replace('\'', "''");
+    format!(
+        "@echo off\r\nsetlocal\r\npowershell -NoProfile -ExecutionPolicy Bypass -Command \"$dir=[IO.Path]::GetFullPath('{}'); $p=[Environment]::GetEnvironmentVariable('Path','User'); if ($null -eq $p) {{ exit 2 }}; $root=$dir.TrimEnd('\\'); $n=($p -split ';' | Where-Object {{ $cur=$_.Replace('/','\\'); $cur -and $cur.TrimEnd('\\') -ne $root -and $cur.TrimEnd('\\') -ne ($root + '\\bin').TrimEnd('\\') }}) -join ';'; [Environment]::SetEnvironmentVariable('Path',$n,'User')\"\r\nif errorlevel 1 exit /b 1\r\ndel /q \"%~dp0ghitadownload.exe\" 2>nul\r\ndel /q \"%~dp0ghita.exe\" 2>nul\r\ndel /q \"%~dp0uninstall.bat\" 2>nul\r\ndel /q \"%~dp0bin\\yt-dlp.exe\" 2>nul\r\ndel /q \"%~dp0bin\\ffmpeg.exe\" 2>nul\r\nrd \"%~dp0bin\" 2>nul\r\nrd \"%~dp0\" 2>nul\r\nif exist \"%~dp0\" exit /b 1\r\necho Da go bo Ghita khoi he thong thanh cong!\r\npause\r\n",
+        dir_literal
+    )
 }
 
 fn validate_install_dir(path: &Path) -> Result<(), String> {
@@ -483,7 +499,7 @@ fn remove_from_user_path(dir: &Path) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_args, validate_install_dir, write_atomic};
+    use super::{build_uninstall_script, parse_args, validate_install_dir, write_atomic};
     use std::path::{Path, PathBuf};
 
     #[test]
@@ -516,5 +532,27 @@ mod tests {
         write_atomic(&path, b"second").unwrap();
         assert_eq!(std::fs::read(&path).unwrap(), b"second");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn uninstall_script_embeds_install_dir_without_args_placeholder() {
+        let script = build_uninstall_script(Path::new(r"C:\Apps\Ghita"));
+        assert!(script.contains("[IO.Path]::GetFullPath('C:\\Apps\\Ghita')"));
+        assert!(!script.contains("$args[0]"));
+        assert!(!script.contains("\"%~dp0\"\r\nif errorlevel"));
+        assert!(script.contains("SetEnvironmentVariable('Path',$n,'User')"));
+    }
+
+    #[test]
+    fn uninstall_script_escapes_single_quotes_in_install_dir() {
+        let script = build_uninstall_script(Path::new(r"C:\Apps\Ghita's Music"));
+        assert!(script.contains("[IO.Path]::GetFullPath('C:\\Apps\\Ghita''s Music')"));
+    }
+
+    #[test]
+    fn uninstall_script_normalizes_forward_slash_path_entries() {
+        let script = build_uninstall_script(Path::new("C:/Apps/Ghita"));
+        assert!(script.contains("[IO.Path]::GetFullPath('C:/Apps/Ghita')"));
+        assert!(script.contains(".Replace('/','\\')"));
     }
 }

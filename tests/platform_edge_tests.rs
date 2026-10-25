@@ -95,6 +95,18 @@ fn suno_alt_hosts_are_recognized() {
 }
 
 #[test]
+fn suno_share_links_are_recognized() {
+    assert_eq!(
+        PlatformParser::parse("https://suno.com/s/zhMpcKnxGK2jaWui"),
+        UrlType::SunoShare("https://suno.com/s/zhMpcKnxGK2jaWui".to_string())
+    );
+    assert_eq!(
+        PlatformParser::parse("https://suno.com/share/3UMkoenmPYGTZFk0"),
+        UrlType::SunoShare("https://suno.com/share/3UMkoenmPYGTZFk0".to_string())
+    );
+}
+
+#[test]
 fn fb_watch_links_are_classified_as_facebook() {
     assert_eq!(
         PlatformParser::parse("https://fb.watch/abcd12345/"),

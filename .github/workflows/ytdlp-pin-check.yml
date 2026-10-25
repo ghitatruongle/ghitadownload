@@ -1,0 +1,23 @@
+name: yt-dlp pin check
+
+on:
+  schedule:
+    - cron: "0 3 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  pin-check:
+    name: Nhắc bump khi yt-dlp upstream có bản mới
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: So sánh pin với bản phát hành mới nhất
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: pwsh
+        run: ./scripts/check_ytdlp_pin.ps1

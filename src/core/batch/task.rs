@@ -1,15 +1,17 @@
 use anyhow::anyhow;
 use colored::Colorize;
 use indicatif::{ProgressBar, ProgressStyle};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock};
 
 use crate::core::config::{AudioFormat, DownloadSettings};
 use crate::core::downloader::{DownloadMode, StreamDownloader};
+use crate::core::matching::{self, SearchCandidate};
 use crate::core::suno::SunoClient;
 use crate::core::tagger::Tagger;
 use crate::core::transcoder::Transcoder;
 use crate::core::verify;
+use crate::core::youtube::YouTubeClient;
 use crate::utils::file_helper::ensure_unique_path_with_options;
 
 use super::{DownloadTask, TaskOutcome, DURATION_TOLERANCE_SECS};
@@ -65,6 +67,7 @@ pub(super) async fn process_task(
     };
 
     let mut downloaded: Option<PathBuf> = None;
+    let mut source_note: Option<String> = None;
     let requires_audio_stream = matches!(
         settings.format,
         AudioFormat::Mp3
@@ -73,6 +76,11 @@ pub(super) async fn process_task(
             | AudioFormat::Aac
             | AudioFormat::Opus
     );
+    let lossless_target = match settings.format {
+        AudioFormat::Flac => Some("FLAC"),
+        AudioFormat::Wav => Some("WAV"),
+        _ => None,
+    };
 
     for (attempt_idx, target) in targets.iter().enumerate() {
         if cancel.is_cancelled() {
@@ -83,6 +91,7 @@ pub(super) async fn process_task(
                 logs,
                 task,
                 task_index: index,
+                source_note: None,
             };
         }
         let label = if attempt_idx == 0 {
@@ -115,14 +124,37 @@ pub(super) async fn process_task(
             {
                 Ok(()) => p_clone,
                 Err(e) => {
-                    logs.push(format!("    {} {}", "✖".red(), e));
+                    logs.push(format!(
+                        "    {} {}",
+                        "✖".red(),
+                        e.to_string().replace(['\r', '\n'], " ").trim()
+                    ));
                     continue;
                 }
             }
         } else {
             let ytdlp_p = ytdlp.clone();
             let temp = temp_dir.clone();
-            let tgt = target.clone();
+            let mut tgt = target.clone();
+            if tgt.starts_with("ytsearch") {
+                if let Some((picked_url, picked_title)) = rank_search_target(
+                    ytdlp_p.as_path(),
+                    has_node,
+                    settings.cookies_file.as_ref(),
+                    settings.cookies_from_browser.as_deref(),
+                    &tgt,
+                    &task,
+                )
+                .await
+                {
+                    logs.push(format!(
+                        "    {} Khớp bài: chọn kết quả tốt nhất: {}",
+                        "🎯".cyan(),
+                        picked_title
+                    ));
+                    tgt = picked_url;
+                }
+            }
             let bar = handle.clone();
             let dl = StreamDownloader::new(
                 ytdlp_p.as_path(),
@@ -137,7 +169,11 @@ pub(super) async fn process_task(
             match dl_res {
                 Ok(p) => p,
                 Err(e) => {
-                    logs.push(format!("    {} {}", "✖".red(), e));
+                    logs.push(format!(
+                        "    {} {}",
+                        "✖".red(),
+                        e.to_string().replace(['\r', '\n'], " ").trim()
+                    ));
                     if cancel.is_cancelled() {
                         handle.finish_and_clear();
                         logs.push(format!("    {} {}", "✖".red(), "Đã hủy tải"));
@@ -146,6 +182,7 @@ pub(super) async fn process_task(
                             logs,
                             task,
                             task_index: index,
+                            source_note: None,
                         };
                     }
                     continue;
@@ -162,6 +199,7 @@ pub(super) async fn process_task(
                 logs,
                 task,
                 task_index: index,
+                source_note: None,
             };
         }
 
@@ -191,27 +229,53 @@ pub(super) async fn process_task(
             }
         }
 
+        let mut probed_codec: Option<String> = None;
+        let mut probed_bitrate: Option<u64> = None;
         let check = match verify::probe_media(&path, ff.as_path(), cancel.subscribe()).await {
-            Ok(info) => verify::validate_downloaded(&info, expected, DURATION_TOLERANCE_SECS)
-                .and_then(|_| {
-                    if !info.has_audio && requires_audio_stream {
-                        return Err(anyhow!(
-                            "Nguồn không chứa luồng âm thanh (video im lặng hoặc audio bị khóa), không thể xuất tệp âm thanh"
-                        ));
-                    }
-                    Ok(())
-                }),
+            Ok(info) => {
+                probed_codec = info.audio_codec.clone();
+                probed_bitrate = info.audio_bitrate_kbps;
+                verify::validate_downloaded(&info, expected, DURATION_TOLERANCE_SECS).and_then(
+                    |_| {
+                        if !info.has_audio && requires_audio_stream {
+                            return Err(anyhow!(
+                                "Nguồn không chứa luồng âm thanh (video im lặng hoặc audio bị khóa), không thể xuất tệp âm thanh"
+                            ));
+                        }
+                        Ok(())
+                    },
+                )
+            }
             Err(e) => Err(e),
         };
 
         match check {
             Ok(()) => {
+                if let Some(target_label) = lossless_target {
+                    let note = verify::lossy_transcode_note(
+                        target_label,
+                        probed_codec.as_deref(),
+                        probed_bitrate,
+                    );
+                    if let Some(text) = note {
+                        source_note = Some(text);
+                        logs.push(format!(
+                            "    {} {}",
+                            "ℹ".yellow(),
+                            source_note.clone().unwrap_or_default().yellow()
+                        ));
+                    }
+                }
                 downloaded = Some(path);
                 break;
             }
             Err(e) => {
                 let _ = std::fs::remove_file(&path);
-                logs.push(format!("    {} Tệp không đạt kiểm chứng: {}", "✖".red(), e));
+                logs.push(format!(
+                    "    {} Tệp không đạt kiểm chứng: {}",
+                    "✖".red(),
+                    e.to_string().replace(['\r', '\n'], " ").trim()
+                ));
             }
         }
     }
@@ -231,6 +295,7 @@ pub(super) async fn process_task(
                 logs,
                 task,
                 task_index: index,
+                source_note: None,
             };
         }
     };
@@ -267,12 +332,17 @@ pub(super) async fn process_task(
         Ok(path) => path,
         Err(e) => {
             handle.finish_and_clear();
-            logs.push(format!("    {} {}", "✖".red(), e));
+            logs.push(format!(
+                "    {} {}",
+                "✖".red(),
+                e.to_string().replace(['\r', '\n'], " ").trim()
+            ));
             return TaskOutcome {
                 ok: false,
                 logs,
                 task,
                 task_index: index,
+                source_note: None,
             };
         }
     };
@@ -335,11 +405,19 @@ pub(super) async fn process_task(
     if ok && matches!(fmt, AudioFormat::Flac | AudioFormat::Aac) {
         match tagger.fetch_cover_file(&task.metadata, &temp_dir).await {
             Ok(Some(cover)) => {
-                match crate::core::transcoder::embed_cover_ffmpeg(
-                    &final_path,
-                    &cover,
-                    ffmpeg.as_path(),
-                ) {
+                let embed_input = final_path.clone();
+                let embed_cover = cover.clone();
+                let embed_ffmpeg = ffmpeg.clone();
+                let embed_res = tokio::task::spawn_blocking(move || {
+                    crate::core::transcoder::embed_cover_ffmpeg(
+                        &embed_input,
+                        &embed_cover,
+                        &embed_ffmpeg,
+                    )
+                })
+                .await
+                .unwrap_or_else(|error| Err(anyhow!("Tác vụ nhúng ảnh bìa bị ngắt: {error}")));
+                match embed_res {
                     Ok(muxed) => match crate::utils::fs::replace_file(&muxed, &final_path) {
                         Ok(()) => logs.push(format!(
                             "    {} {}",
@@ -381,5 +459,52 @@ pub(super) async fn process_task(
         logs,
         task,
         task_index: index,
+        source_note,
     }
+}
+
+async fn rank_search_target(
+    ytdlp: &Path,
+    has_node: bool,
+    cookies_file: Option<&PathBuf>,
+    cookies_from_browser: Option<&str>,
+    target: &str,
+    task: &DownloadTask,
+) -> Option<(String, String)> {
+    let query = target.split_once(':')?.1.trim().to_string();
+    if query.is_empty() {
+        return None;
+    }
+    let search = format!("ytsearch8:{query}");
+    let ytdlp_owned = ytdlp.to_path_buf();
+    let cookies_owned = cookies_file.cloned();
+    let browser_owned = cookies_from_browser.map(str::to_string);
+    let items = tokio::task::spawn_blocking(move || {
+        let client = YouTubeClient::new(
+            &ytdlp_owned,
+            has_node,
+            cookies_owned.as_ref(),
+            browser_owned.as_deref(),
+        );
+        client.extract_playlist_items(&search)
+    })
+    .await
+    .ok()?
+    .ok()?;
+    let candidates: Vec<SearchCandidate> = items
+        .into_iter()
+        .map(|item| SearchCandidate {
+            url: item.direct_url,
+            title: item.title,
+            uploader: item.uploader,
+            duration_secs: item.duration_secs,
+        })
+        .collect();
+    let best = matching::pick_best(
+        &candidates,
+        &task.metadata.title,
+        &task.metadata.artists,
+        task.expected_duration_secs,
+    )?;
+    Some((best.url.clone(), best.title.clone()))
 }

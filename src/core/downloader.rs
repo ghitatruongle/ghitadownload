@@ -67,22 +67,21 @@ impl StreamDownloader {
         cancel: tokio::sync::watch::Receiver<bool>,
     ) -> Result<PathBuf> {
         let mut last_err = String::new();
+        let seq = DOWNLOAD_SEQ.fetch_add(1, Ordering::Relaxed);
+        let unique_id = format!(
+            "dl_{}_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis(),
+            seq
+        );
 
         for attempt in 1..=MAX_ATTEMPTS {
             if *cancel.borrow() {
                 return Err(anyhow!("Đã hủy"));
             }
-            let seq = DOWNLOAD_SEQ.fetch_add(1, Ordering::Relaxed);
-            let unique_id = format!(
-                "dl_{}_{}_{}_{}",
-                std::process::id(),
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_millis(),
-                seq,
-                attempt
-            );
             let output_template = temp_dir.join(format!("{}.%(ext)s", unique_id));
             let output_template_str = output_template.to_string_lossy();
 
@@ -117,6 +116,7 @@ impl StreamDownloader {
             }
 
             args.push("--no-playlist".to_string());
+            args.push("--continue".to_string());
             args.extend(YTDLP_DEFAULT_ARGS.iter().map(|s| s.to_string()));
             if let Some(path) = &self.cookies_file {
                 args.push("--cookies".to_string());

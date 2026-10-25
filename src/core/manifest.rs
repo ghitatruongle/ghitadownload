@@ -12,6 +12,7 @@ pub fn write_manifest(
     tasks: &[DownloadTask],
     failed: &[DownloadTask],
     settings: &DownloadSettings,
+    source_notes: &[(usize, Option<String>)],
 ) -> Result<PathBuf> {
     let secs = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -36,11 +37,19 @@ pub fn write_manifest(
             let failed_hit = failed.iter().any(|f| {
                 f.display_title == task.display_title && f.source_or_search == task.source_or_search
             });
-            json!({
+            let note = source_notes
+                .iter()
+                .find(|(task_index, _)| *task_index == index)
+                .and_then(|(_, note)| note.clone());
+            let mut entry = json!({
                 "url": task.source_or_search,
                 "status": if failed_hit { "failed" } else { "ok" },
                 "task_index": index,
-            })
+            });
+            if let Some(note) = note {
+                entry["source_note"] = json!(note);
+            }
+            entry
         })
         .collect();
 
@@ -48,7 +57,7 @@ pub fn write_manifest(
     let failed_count = results.len() - success_count;
 
     let doc = json!({
-        "version": "0.0.4",
+        "version": "0.0.5-alpha",
         "generated_at": generated_at,
         "settings": {
             "format": settings.format.to_string(),

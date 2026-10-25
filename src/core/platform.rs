@@ -20,6 +20,7 @@ pub enum UrlType {
     YouTubePlaylist(String),
     SunoTrack(String),
     SunoPlaylist(String),
+    SunoShare(String),
     SocialVideo { url: String, platform_name: String },
     DirectMedia(String),
     DirectSearch(String),
@@ -117,6 +118,9 @@ impl PlatformParser {
                     return UrlType::SunoPlaylist(uuid);
                 }
                 return UrlType::SunoTrack(uuid);
+            }
+            if url.path().starts_with("/s/") || url.path().starts_with("/share/") {
+                return UrlType::SunoShare(trimmed.to_string());
             }
             return UrlType::DirectSearch(trimmed.to_string());
         }

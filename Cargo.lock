@@ -588,7 +588,7 @@ dependencies = [
 
 [[package]]
 name = "ghita_download"
-version = "0.0.4"
+version = "0.0.5-alpha"
 dependencies = [
  "aes",
  "aes-gcm",

@@ -32,6 +32,8 @@ fn media_info(duration_secs: f64, size_bytes: u64) -> MediaInfo {
         size_bytes,
         has_audio: true,
         has_video: false,
+        audio_codec: None,
+        audio_bitrate_kbps: None,
     }
 }
 
@@ -139,6 +141,8 @@ fn test_validate_downloaded_rules() {
         size_bytes: 5_000_000,
         has_audio: false,
         has_video: false,
+        audio_codec: None,
+        audio_bitrate_kbps: None,
     };
     assert!(validate_downloaded(&no_streams, None, 10.0).is_err());
 }
@@ -219,4 +223,36 @@ async fn test_probe_media_on_tiny_ftyp_without_decode() {
         .await
         .is_err());
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn test_parse_audio_stream_line_extracts_codec_and_bitrate() {
+    use ghita_download::core::verify::parse_audio_stream_line;
+    let line =
+        "  Stream #0:0(und): Audio: opus (Opus / 0x7375704F), 48000 Hz, stereo, fltp, 129 kb/s";
+    let (codec, bitrate) = parse_audio_stream_line(line).unwrap();
+    assert_eq!(codec, "opus");
+    assert_eq!(bitrate, Some(129));
+
+    let no_bitrate = "  Stream #0:0: Audio: flac, 96000 Hz, stereo, s32";
+    let (codec, bitrate) = parse_audio_stream_line(no_bitrate).unwrap();
+    assert_eq!(codec, "flac");
+    assert_eq!(bitrate, None);
+}
+
+#[test]
+fn test_lossy_transcode_note_flags_only_lossy_sources() {
+    use ghita_download::core::verify::lossy_transcode_note;
+
+    let note = lossy_transcode_note("FLAC", Some("opus"), Some(129)).expect("opus phải cảnh báo");
+    assert!(note.contains("opus"));
+    assert!(note.contains("129 kb/s"));
+    assert!(note.contains("FLAC"));
+
+    assert!(lossy_transcode_note("WAV", Some("aac"), None).is_some());
+    assert!(lossy_transcode_note("FLAC", Some("mp3"), Some(320)).is_some());
+
+    assert!(lossy_transcode_note("FLAC", Some("flac"), None).is_none());
+    assert!(lossy_transcode_note("WAV", Some("pcm_s16le"), None).is_none());
+    assert!(lossy_transcode_note("FLAC", None, None).is_none());
 }

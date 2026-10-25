@@ -21,6 +21,7 @@ fn sample_settings(output_dir: PathBuf) -> DownloadSettings {
         keep_accents: false,
         cookies_file: None,
         cookies_from_browser: None,
+        raw: false,
     }
 }
 

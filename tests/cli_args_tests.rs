@@ -377,3 +377,35 @@ fn depth_quality_coerces_between_wav_and_flac() {
     .validate()
     .is_err());
 }
+
+#[test]
+fn check_ytdlp_is_headless_and_runs_alone() {
+    let args = parse(&["--check-ytdlp"]);
+    assert!(args.check_ytdlp);
+    assert!(args.is_headless());
+    assert!(args.validate().is_ok());
+    assert!(parse(&["--check-tools"]).validate().is_ok());
+}
+
+#[test]
+fn check_ytdlp_conflicts_with_update_and_download_actions() {
+    assert!(parse(&["--check-ytdlp", "--update-ytdlp"])
+        .validate()
+        .is_err());
+    assert!(parse(&["--check-ytdlp", "--link", "https://example.com"])
+        .validate()
+        .is_err());
+    assert!(
+        parse(&["--check-ytdlp", "--retry-failed", "--output", "out"])
+            .validate()
+            .is_err()
+    );
+    assert!(parse(&["--check-ytdlp", "--raw"]).validate().is_err());
+}
+
+#[test]
+fn update_ytdlp_conflicts_with_check_ytdlp() {
+    assert!(parse(&["--update-ytdlp", "--check-ytdlp"])
+        .validate()
+        .is_err());
+}

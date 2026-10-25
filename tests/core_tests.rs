@@ -301,6 +301,17 @@ fn test_social_and_suno_parser() {
     );
 }
 
+#[tokio::test]
+async fn test_suno_resolve_share_url() {
+    let client = ghita_download::core::suno::SunoClient::new();
+    let res = client
+        .resolve_share_url("https://suno.com/s/zhMpcKnxGK2jaWui")
+        .await;
+    if let Ok(uuid) = res {
+        assert_eq!(uuid, "71797fea-136f-4e01-99da-9f4917a49a39");
+    }
+}
+
 #[test]
 fn test_extended_accent_removal() {
     use ghita_download::utils::file_helper::remove_vietnamese_accents;
@@ -461,6 +472,7 @@ fn test_failed_queue_serde_roundtrip_and_retry() {
         keep_accents: false,
         cookies_file: None,
         cookies_from_browser: None,
+        raw: false,
     };
 
     let task = DownloadTask {
@@ -536,6 +548,7 @@ fn test_write_manifest_parses_and_counts() {
         keep_accents: false,
         cookies_file: None,
         cookies_from_browser: None,
+        raw: false,
     };
 
     let mk = |title: &str, src: &str| DownloadTask {
@@ -563,7 +576,7 @@ fn test_write_manifest_parses_and_counts() {
     let _ = std::fs::remove_dir_all(&tmp_dir);
     std::fs::create_dir_all(&tmp_dir).unwrap();
 
-    let path = write_manifest(&tmp_dir, &tasks, &failed, &settings).unwrap();
+    let path = write_manifest(&tmp_dir, &tasks, &failed, &settings, &[]).unwrap();
     assert!(path.exists());
     assert!(path
         .file_name()
@@ -573,7 +586,7 @@ fn test_write_manifest_parses_and_counts() {
 
     let content = std::fs::read_to_string(&path).unwrap();
     let doc: serde_json::Value = serde_json::from_str(&content).unwrap();
-    assert_eq!(doc["version"], "0.0.4");
+    assert_eq!(doc["version"], "0.0.5-alpha");
     assert_eq!(doc["success_count"], 1);
     assert_eq!(doc["failed_count"], 1);
     assert_eq!(doc["settings"]["concurrency"], 3);
@@ -863,4 +876,55 @@ async fn test_with_retry_does_not_retry_plain_errors() {
 
     assert!(result.is_err());
     assert_eq!(calls.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn test_write_manifest_records_source_note_per_task() {
+    use ghita_download::core::batch::DownloadTask;
+    use ghita_download::core::config::{AudioFormat, DownloadSettings};
+    use ghita_download::core::manifest::write_manifest;
+    use ghita_download::core::tagger::AudioMetadata;
+    use std::path::PathBuf;
+
+    let settings = DownloadSettings {
+        output_dir: PathBuf::from("D:\\Music\\Test"),
+        format: AudioFormat::Flac,
+        quality: None,
+        video_resolution: None,
+        concurrency: 3,
+        keep_accents: false,
+        cookies_file: None,
+        cookies_from_browser: None,
+        raw: false,
+    };
+    let mk = |title: &str| DownloadTask {
+        display_title: title.to_string(),
+        source_or_search: format!("https://example.com/{title}"),
+        fallback_searches: Vec::new(),
+        expected_duration_secs: None,
+        metadata: AudioMetadata {
+            title: title.to_string(),
+            artists: vec!["Artist".to_string()],
+            album: "Album".to_string(),
+            release_year: None,
+            cover_url: None,
+            track_number: None,
+            total_tracks: None,
+        },
+    };
+    let tasks = vec![mk("lossy"), mk("clean")];
+    let notes = vec![(0usize, Some("nguồn opus".to_string())), (1usize, None)];
+
+    let tmp_dir = std::env::temp_dir().join("ghita_manifest_note_test");
+    let _ = std::fs::remove_dir_all(&tmp_dir);
+    std::fs::create_dir_all(&tmp_dir).unwrap();
+
+    let path = write_manifest(&tmp_dir, &tasks, &[], &settings, &notes).unwrap();
+    let doc: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    let results = doc["results"].as_array().unwrap();
+    assert_eq!(results[0]["source_note"], "nguồn opus");
+    assert!(results[1].get("source_note").is_none());
+
+    let _ = std::fs::remove_dir_all(&tmp_dir);
 }

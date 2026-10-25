@@ -20,6 +20,10 @@ bin/*
 
 # Internal Agent Notes
 AGENT.md
+.freebuff/
+
+# Local-only diagnostic script (not shipped in repo)
+scripts/check-may-khac.bat
 
 # Application runtime configuration & temporary folders
 ghita_config.json
