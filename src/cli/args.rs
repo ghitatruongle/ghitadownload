@@ -12,7 +12,7 @@ use crate::core::config::{AppConfig, AudioFormat, AudioQuality, DownloadSettings
     name = "ghitadownload",
     version = env!("CARGO_PKG_VERSION"),
     about = "🎵 Ghita Downloader - Tải nhạc YouTube, Spotify, SoundCloud, Bandcamp, Suno AI, TikTok, Facebook, Instagram, Threads",
-    long_about = "🎵 Ghita Downloader (CLI)\n\nSử dụng:\n  ghitadownload                        Khởi động giao diện tương tác\n  ghitadownload --version              Xem phiên bản hiện tại\n  ghitadownload --help                 Xem trợ giúp đầy đủ\n\nChế độ tải nhanh (headless):\n  ghitadownload --link <URL> [<URL>...] --output <THƯ_MỤC> --format mp3|wav|flac|aac|opus|original|video --quality 320k\n  ghitadownload --file links.txt --format original\n  ghitadownload --retry-failed --output <THƯ_MỤC_CHỨA_failed_tasks.json>"
+    long_about = "🎵 Ghita Downloader (CLI)\n\nSử dụng:\n  ghitadownload                        Khởi động giao diện tương tác\n  ghitadownload --version              Xem phiên bản hiện tại\n  ghitadownload --help                 Xem trợ giúp đầy đủ\n\nChế độ tải nhanh (headless):\n  ghitadownload --link <URL> [<URL>...] --output <THƯ_MỤC> --format mp3|wav|flac|aac|opus|original|video --quality 320k\n  ghitadownload --file links.txt --format original\n  ghitadownload --retry-failed --output <THƯ_MỤC_CHỨA_failed_tasks.json>\n  ghitadownload --resume --output <THƯ_MỤC_CHỨA_pending_tasks.json>"
 )]
 pub struct CliArgs {
     #[arg(long = "link", visible_alias = "links", num_args = 1.., value_name = "URL")]
@@ -38,6 +38,12 @@ pub struct CliArgs {
 
     #[arg(long)]
     pub retry_failed: bool,
+
+    #[arg(long)]
+    pub resume: bool,
+
+    #[arg(long = "no-lyrics")]
+    pub no_lyrics: bool,
 
     #[arg(long = "update-ytdlp", visible_alias = "update-tools")]
     pub update_ytdlp: bool,
@@ -100,6 +106,7 @@ impl CliArgs {
             || !self.links.is_empty()
             || self.file.is_some()
             || self.retry_failed
+            || self.resume
             || self.output.is_some()
             || self.format.is_some()
             || self.quality.is_some()
@@ -168,9 +175,30 @@ impl CliArgs {
                 || self.keep_accents
                 || self.cookies.is_some()
                 || self.cookies_from_browser.is_some()
-                || self.raw;
+                || self.raw
+                || self.resume
+                || self.no_lyrics;
             return if has_conflict {
                 Err("--retry-failed chỉ chấp nhận --output và không được kết hợp nguồn hoặc tùy chọn định dạng".to_string())
+            } else {
+                Ok(())
+            };
+        }
+
+        if self.resume {
+            let has_conflict = !self.links.is_empty()
+                || self.file.is_some()
+                || self.format.is_some()
+                || self.quality.is_some()
+                || self.resolution.is_some()
+                || self.concurrency.is_some()
+                || self.keep_accents
+                || self.cookies.is_some()
+                || self.cookies_from_browser.is_some()
+                || self.raw
+                || self.no_lyrics;
+            return if has_conflict {
+                Err("--resume chỉ chấp nhận --output và không được kết hợp nguồn hoặc tùy chọn định dạng".to_string())
             } else {
                 Ok(())
             };
@@ -332,7 +360,7 @@ impl CliArgs {
             }
         }
         let links = MultiLinkInput::process_links(raw);
-        if !self.retry_failed && links.is_empty() {
+        if !self.retry_failed && !self.resume && links.is_empty() {
             eprintln!("❌ Không có liên kết hợp lệ trong đầu vào");
             return 1;
         }
@@ -342,7 +370,18 @@ impl CliArgs {
             None => return 1,
         };
 
-        let (settings, tasks) = if self.retry_failed {
+        let (settings, tasks) = if self.resume {
+            match BatchProcessor::resume_from_file(&output_dir) {
+                Ok((mut settings, tasks)) => {
+                    settings.concurrency = concurrency;
+                    (settings, tasks)
+                }
+                Err(error) => {
+                    eprintln!("❌ {error}");
+                    return 1;
+                }
+            }
+        } else if self.retry_failed {
             match BatchProcessor::retry_from_file(&output_dir) {
                 Ok((mut settings, tasks)) => {
                     settings.concurrency = concurrency;
@@ -416,6 +455,7 @@ impl CliArgs {
                 cookies_file: self.cookies.clone(),
                 cookies_from_browser: self.cookies_from_browser.clone(),
                 raw: self.raw,
+                fetch_lyrics: !self.no_lyrics && config.fetch_lyrics,
             };
             let processor = BatchProcessor::new(
                 settings.clone(),

@@ -406,6 +406,12 @@ pub struct DownloadSettings {
     pub cookies_from_browser: Option<String>,
     #[serde(default)]
     pub raw: bool,
+    #[serde(default = "default_fetch_lyrics")]
+    pub fetch_lyrics: bool,
+}
+
+fn default_fetch_lyrics() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -417,6 +423,8 @@ pub struct AppConfig {
     pub video_resolution: Option<u32>,
     #[serde(default)]
     pub keep_accents: bool,
+    #[serde(default = "default_fetch_lyrics")]
+    pub fetch_lyrics: bool,
 }
 
 fn default_video_resolution() -> Option<u32> {
@@ -435,6 +443,7 @@ impl Default for AppConfig {
             last_quality: Some(AudioQuality::Mp3_320k),
             video_resolution: default_video_resolution(),
             keep_accents: false,
+            fetch_lyrics: default_fetch_lyrics(),
         }
     }
 }
@@ -622,6 +631,11 @@ impl AppConfig {
 
     pub fn set_keep_accents(&mut self, keep: bool) -> Result<(), String> {
         self.keep_accents = keep;
+        self.try_save()
+    }
+
+    pub fn set_fetch_lyrics(&mut self, fetch: bool) -> Result<(), String> {
+        self.fetch_lyrics = fetch;
         self.try_save()
     }
 }

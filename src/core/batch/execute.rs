@@ -14,8 +14,8 @@ use crate::utils::file_helper::ensure_dir;
 
 use super::task::{process_task, TaskContext};
 use super::{
-    BatchOutcome, BatchProcessor, DownloadTask, FailedQueue, TaskOutcome, DEFAULT_CONCURRENCY,
-    FAILED_QUEUE_FILE,
+    clear_pending_state, write_pending_state, BatchOutcome, BatchProcessor, DownloadTask,
+    FailedQueue, TaskOutcome, DEFAULT_CONCURRENCY, FAILED_QUEUE_FILE,
 };
 
 impl BatchProcessor {
@@ -31,6 +31,14 @@ impl BatchProcessor {
         let clean_output_dir = ensure_dir(&self.settings.output_dir)?;
         let _ = crate::utils::file_helper::sweep_stale_temp_dirs(&clean_output_dir);
         let temp_dir = create_execution_temp_dir(&clean_output_dir)?;
+
+        if let Err(error) = write_pending_state(&clean_output_dir, &temp_dir, &self.settings, tasks)
+        {
+            println!(
+                "{}",
+                format!("  Không thể lưu trạng thái resume: {}", error).yellow()
+            );
+        }
 
         println!(
             "\n{} Chuẩn bị tải {} bài hát (song song tối đa {}) vào thư mục: {}\n",
@@ -123,6 +131,7 @@ impl BatchProcessor {
         let mut success_count = 0usize;
         let mut failed_tasks: Vec<(usize, DownloadTask)> = Vec::new();
         let mut source_notes: Vec<(usize, Option<String>)> = Vec::new();
+        let mut completed_ok: std::collections::HashSet<usize> = std::collections::HashSet::new();
         let logs_to_terminal = std::io::stdout().is_terminal();
 
         loop {
@@ -141,6 +150,28 @@ impl BatchProcessor {
                             source_notes.push((outcome.task_index, outcome.source_note));
                             if outcome.ok {
                                 success_count += 1;
+                                completed_ok.insert(outcome.task_index);
+                                let remaining: Vec<DownloadTask> = tasks
+                                    .iter()
+                                    .enumerate()
+                                    .filter(|(index, _)| !completed_ok.contains(index))
+                                    .map(|(_, task)| task.clone())
+                                    .collect();
+                                if let Err(error) = write_pending_state(
+                                    &clean_output_dir,
+                                    &temp_dir,
+                                    &self.settings,
+                                    &remaining,
+                                ) {
+                                    println!(
+                                        "{}",
+                                        format!(
+                                            "  Không thể cập nhật trạng thái resume: {}",
+                                            error
+                                        )
+                                        .yellow()
+                                    );
+                                }
                             } else {
                                 failed_tasks.push((outcome.task_index, outcome.task));
                             }
@@ -211,6 +242,7 @@ impl BatchProcessor {
         } else {
             let _ = std::fs::remove_file(clean_output_dir.join(FAILED_QUEUE_FILE));
         }
+        clear_pending_state(&clean_output_dir);
         let _ = std::fs::remove_dir_all(&temp_dir);
 
         let manifest_result = crate::core::manifest::write_manifest(

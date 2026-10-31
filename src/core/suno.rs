@@ -124,6 +124,20 @@ fn decrypt_aes_128_ctr(encrypted_data: &mut [u8], key_bytes: &[u8], iv_bytes: &[
     Ok(())
 }
 
+fn bytes_have_media_signature(bytes: &[u8]) -> bool {
+    if bytes.len() < 12 {
+        return false;
+    }
+    &bytes[4..8] == b"ftyp"
+        || bytes.starts_with(b"ID3")
+        || bytes.starts_with(b"OggS")
+        || bytes.starts_with(b"RIFF")
+        || bytes.starts_with(b"fLaC")
+        || bytes.starts_with(b"FORM")
+        || bytes.starts_with(&[0x1A, 0x45, 0xDF, 0xA3])
+        || (bytes[0] == 0xFF && (bytes[1] & 0xE0) == 0xE0)
+}
+
 fn parse_clip_payload(value: &Value, uuid: &str) -> Result<SunoTrackMeta> {
     let title = value["title"]
         .as_str()
@@ -480,21 +494,24 @@ impl SunoClient {
 
             let mut resp = resp;
             let mut bytes = Vec::new();
-            while let Ok(Some(chunk)) = resp.chunk().await {
-                bytes.extend_from_slice(&chunk);
-                if let Some(bar) = progress {
-                    bar.inc(chunk.len() as u64);
+            let download_interrupted = loop {
+                match resp.chunk().await {
+                    Ok(Some(chunk)) => {
+                        bytes.extend_from_slice(&chunk);
+                        if let Some(bar) = progress {
+                            bar.inc(chunk.len() as u64);
+                        }
+                    }
+                    Ok(None) => break false,
+                    Err(_) => break true,
                 }
-            }
+            };
 
-            if bytes.len() < 1024 {
+            if download_interrupted || bytes.len() < 1024 {
                 continue;
             }
 
-            let is_encrypted = meta.is_encrypted
-                || (bytes.len() > 8
-                    && &bytes[4..8] != b"ftyp"
-                    && !bytes.starts_with(b"\x1a\x45\xdf\xa3"));
+            let is_encrypted = meta.is_encrypted || !bytes_have_media_signature(&bytes);
 
             if is_encrypted {
                 let mut decrypted = bytes.clone();
@@ -611,10 +628,40 @@ fn merge_unique_tracks(
 #[cfg(test)]
 mod tests {
     use super::{
-        collect_media_urls, decrypt_aes_128_ctr, is_encrypted_encoding, is_forbidden_url,
-        merge_unique_tracks, parse_clip_payload, parse_playlist_page,
+        bytes_have_media_signature, collect_media_urls, decrypt_aes_128_ctr, is_encrypted_encoding,
+        is_forbidden_url, merge_unique_tracks, parse_clip_payload, parse_playlist_page,
     };
     use serde_json::json;
+
+    #[test]
+    fn bytes_have_media_signature_accepts_known_media_headers() {
+        let m4a = [0u8, 0, 0, 0x20, b'f', b't', b'y', b'p', 0, 0, 0, 0];
+        let mp3 = [b'I', b'D', b'3', 4, 0, 0, 0, 0, 0, 0, 0, 0];
+        let ogg = [b'O', b'g', b'g', b'S', 0, 0, 0, 0, 0, 0, 0, 0];
+        let wav = [b'R', b'I', b'F', b'F', 0, 0, 0, 0, 0, 0, 0, 0];
+        let flac = [b'f', b'L', b'a', b'C', 0, 0, 0, 0, 0, 0, 0, 0];
+        let webm = [0x1A, 0x45, 0xDF, 0xA3, 0, 0, 0, 0, 0, 0, 0, 0];
+        let aiff = [b'F', b'O', b'R', b'M', 0, 0, 0, 0, 0, 0, 0, 0];
+        let mpeg_sync = [0xFF, 0xFB, 0x90, 0x00, 0, 0, 0, 0, 0, 0, 0, 0];
+        assert!(bytes_have_media_signature(&m4a));
+        assert!(bytes_have_media_signature(&mp3));
+        assert!(bytes_have_media_signature(&ogg));
+        assert!(bytes_have_media_signature(&wav));
+        assert!(bytes_have_media_signature(&flac));
+        assert!(bytes_have_media_signature(&webm));
+        assert!(bytes_have_media_signature(&aiff));
+        assert!(bytes_have_media_signature(&mpeg_sync));
+    }
+
+    #[test]
+    fn bytes_have_media_signature_rejects_garbage_or_short_payloads() {
+        let garbage = [0xDE, 0xAD, 0xBE, 0xEF, 0, 0, 0, 0, 0, 0, 0, 0];
+        let short = [b'I', b'D', b'3', 4];
+        let html_error = b"<html><body>403 Forbidden</body></html>".to_vec();
+        assert!(!bytes_have_media_signature(&garbage));
+        assert!(!bytes_have_media_signature(&short));
+        assert!(!bytes_have_media_signature(&html_error));
+    }
 
     #[test]
     fn detects_encrypted_encoding() {

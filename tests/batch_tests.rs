@@ -22,6 +22,7 @@ fn sample_settings(output_dir: PathBuf) -> DownloadSettings {
         cookies_file: None,
         cookies_from_browser: None,
         raw: false,
+        fetch_lyrics: false,
     }
 }
 
@@ -39,6 +40,7 @@ fn sample_task(title: &str) -> DownloadTask {
             cover_url: None,
             track_number: None,
             total_tracks: None,
+            lyrics: None,
         },
     }
 }
@@ -99,5 +101,48 @@ fn failed_queue_roundtrip_preserves_many_tasks() {
     assert_eq!(loaded_tasks.len(), 3);
     assert_eq!(loaded_tasks[2].display_title, "Bài 3");
 
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn pending_state_roundtrip_preserves_tasks_for_resume() {
+    let dir = test_dir("pending_roundtrip");
+    let temp = dir.join(".ghita_temp_pending");
+    std::fs::create_dir_all(&temp).unwrap();
+    let tasks = vec![sample_task("Còn lại 1"), sample_task("Còn lại 2")];
+    ghita_download::core::batch::write_pending_state(
+        &dir,
+        &temp,
+        &sample_settings(dir.clone()),
+        &tasks,
+    )
+    .unwrap();
+    assert!(dir.join("pending_tasks.json").exists());
+
+    let (loaded_settings, loaded_tasks) = BatchProcessor::resume_from_file(&dir).unwrap();
+    assert_eq!(loaded_settings.format, AudioFormat::Mp3);
+    assert_eq!(loaded_settings.concurrency, 3);
+    assert_eq!(loaded_tasks.len(), 2);
+    assert_eq!(loaded_tasks[1].display_title, "Còn lại 2");
+
+    ghita_download::core::batch::clear_pending_state(&dir);
+    assert!(!dir.join("pending_tasks.json").exists());
+    assert!(BatchProcessor::resume_from_file(&dir).is_err());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn resume_from_file_rejects_corrupt_pending_json() {
+    let dir = test_dir("pending_corrupt");
+    std::fs::write(dir.join("pending_tasks.json"), "{ not valid json").unwrap();
+    assert!(BatchProcessor::resume_from_file(&dir).is_err());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn resume_from_file_rejects_wrong_json_shape() {
+    let dir = test_dir("pending_wrong_shape");
+    std::fs::write(dir.join("pending_tasks.json"), "[]").unwrap();
+    assert!(BatchProcessor::resume_from_file(&dir).is_err());
     let _ = std::fs::remove_dir_all(&dir);
 }

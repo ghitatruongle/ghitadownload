@@ -37,6 +37,7 @@ async fn test_transcode_and_tagging_pipeline() {
         cover_url: None,
         track_number: Some(1),
         total_tracks: Some(10),
+        lyrics: None,
     };
 
     let mp3_320_path = test_dir.join("test_320k.mp3");
@@ -211,6 +212,7 @@ async fn test_remux_copy_preserves_codec_and_duration() {
         cover_url: None,
         track_number: None,
         total_tracks: None,
+        lyrics: None,
     };
 
     let out_wav = test_dir.join("output_remux.wav");
@@ -276,6 +278,7 @@ fn test_build_transcode_command_opus() {
         cover_url: None,
         track_number: None,
         total_tracks: None,
+        lyrics: None,
     };
     let cmd = Transcoder::build_transcode_command(
         Path::new("ffmpeg"),

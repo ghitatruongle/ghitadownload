@@ -560,6 +560,7 @@ fn build_task(
             cover_url,
             track_number,
             total_tracks,
+            lyrics: None,
         },
     }
 }
@@ -740,6 +741,7 @@ mod tests {
             cookies_file: None,
             cookies_from_browser: None,
             raw: true,
+            fetch_lyrics: false,
         };
         let processor = BatchProcessor::new(
             settings,
@@ -786,6 +788,7 @@ mod tests {
             cookies_file: None,
             cookies_from_browser: None,
             raw: true,
+            fetch_lyrics: false,
         };
         let processor = BatchProcessor::new(
             settings,

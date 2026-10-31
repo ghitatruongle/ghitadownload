@@ -4,11 +4,11 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-pub const YTDLP_PINNED_VERSION: &str = "2026.08.19";
+pub const YTDLP_PINNED_VERSION: &str = "2026.10.26";
 const YTDLP_FALLBACK_URL: &str =
-    "https://github.com/yt-dlp/yt-dlp/releases/download/2026.08.19/yt-dlp.exe";
+    "https://github.com/yt-dlp/yt-dlp/releases/download/2026.10.26/yt-dlp.exe";
 const YTDLP_FALLBACK_SHA256: &str =
-    "66674953fe251b89f4d08c5f0e35e0728679bd67ab3d7d05c0562af101dd3e7a";
+    "f5389d3698ecde4ef06f4e6b1ce0294fe9ac1396228c8990b8d3416d6d177a7d";
 const YTDLP_LATEST_RELEASE_API: &str = "https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest";
 const FFMPEG_FALLBACK_URL: &str = "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-10-07-13-07/ffmpeg-N-127233-g452820cba6-win64-gpl.zip";
 const FFMPEG_FALLBACK_SHA256: &str =
@@ -510,7 +510,7 @@ mod tests {
 
     #[test]
     fn pinned_constants_are_well_formed() {
-        assert_eq!(YTDLP_PINNED_VERSION, "2026.08.19");
+        assert_eq!(YTDLP_PINNED_VERSION, "2026.10.26");
         assert_eq!(YTDLP_FALLBACK_SHA256.len(), 64);
         assert!(YTDLP_FALLBACK_SHA256.chars().all(|c| c.is_ascii_hexdigit()));
         assert_eq!(FFMPEG_FALLBACK_SHA256.len(), 64);

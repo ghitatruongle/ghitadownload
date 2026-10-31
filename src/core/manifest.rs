@@ -57,7 +57,7 @@ pub fn write_manifest(
     let failed_count = results.len() - success_count;
 
     let doc = json!({
-        "version": "0.0.5-alpha",
+        "version": env!("CARGO_PKG_VERSION"),
         "generated_at": generated_at,
         "settings": {
             "format": settings.format.to_string(),
