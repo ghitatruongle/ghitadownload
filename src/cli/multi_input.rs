@@ -133,6 +133,9 @@ impl MultiLinkInput {
                         );
                     }
                     Event::Key(key_event) => {
+                        if key_event.kind != event::KeyEventKind::Press {
+                            continue;
+                        }
                         *status_message = None;
 
                         match key_event {

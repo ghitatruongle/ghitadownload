@@ -358,3 +358,57 @@ pub fn embed_cover_ffmpeg(input: &Path, cover: &Path, ffmpeg: &Path) -> Result<P
     }
     Ok(output)
 }
+
+pub fn set_lyrics_ffmpeg(input: &Path, lyrics: &str, ffmpeg: &Path) -> Result<PathBuf> {
+    if !input.is_file() {
+        return Err(anyhow!("Không tìm thấy file đầu vào: {}", input.display()));
+    }
+    let extension = input
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or("m4a");
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let parent = input.parent().unwrap_or_else(|| Path::new("."));
+    let stem = input
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or("audio");
+    let output = parent.join(format!("{}.lyrics_{}.{}", stem, stamp, extension));
+    let result = Command::new(ffmpeg)
+        .arg("-y")
+        .arg("-i")
+        .arg(input)
+        .arg("-map")
+        .arg("0")
+        .arg("-c")
+        .arg("copy")
+        .arg("-metadata")
+        .arg(format!("lyrics={}", lyrics))
+        .arg(&output)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .output()
+        .map_err(|e| anyhow!("Không thể chạy FFmpeg: {}", e))?;
+    if !result.status.success() {
+        let _ = std::fs::remove_file(&output);
+        return Err(anyhow!(
+            "FFmpeg nhúng lời bài hát thất bại: {}",
+            String::from_utf8_lossy(&result.stderr).trim()
+        ));
+    }
+    if !output.is_file()
+        || std::fs::metadata(&output)
+            .map(|metadata| metadata.len() == 0)
+            .unwrap_or(true)
+    {
+        return Err(anyhow!(
+            "FFmpeg không tạo được file đầu ra: {}",
+            output.display()
+        ));
+    }
+    Ok(output)
+}

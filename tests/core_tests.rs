@@ -473,6 +473,7 @@ fn test_failed_queue_serde_roundtrip_and_retry() {
         cookies_file: None,
         cookies_from_browser: None,
         raw: false,
+        fetch_lyrics: false,
     };
 
     let task = DownloadTask {
@@ -488,6 +489,7 @@ fn test_failed_queue_serde_roundtrip_and_retry() {
             cover_url: None,
             track_number: None,
             total_tracks: None,
+            lyrics: None,
         },
     };
 
@@ -549,6 +551,7 @@ fn test_write_manifest_parses_and_counts() {
         cookies_file: None,
         cookies_from_browser: None,
         raw: false,
+        fetch_lyrics: false,
     };
 
     let mk = |title: &str, src: &str| DownloadTask {
@@ -564,6 +567,7 @@ fn test_write_manifest_parses_and_counts() {
             cover_url: None,
             track_number: None,
             total_tracks: None,
+            lyrics: None,
         },
     };
 
@@ -586,7 +590,7 @@ fn test_write_manifest_parses_and_counts() {
 
     let content = std::fs::read_to_string(&path).unwrap();
     let doc: serde_json::Value = serde_json::from_str(&content).unwrap();
-    assert_eq!(doc["version"], "0.0.5-alpha");
+    assert_eq!(doc["version"], env!("CARGO_PKG_VERSION"));
     assert_eq!(doc["success_count"], 1);
     assert_eq!(doc["failed_count"], 1);
     assert_eq!(doc["settings"]["concurrency"], 3);
@@ -896,6 +900,7 @@ fn test_write_manifest_records_source_note_per_task() {
         cookies_file: None,
         cookies_from_browser: None,
         raw: false,
+        fetch_lyrics: false,
     };
     let mk = |title: &str| DownloadTask {
         display_title: title.to_string(),
@@ -910,6 +915,7 @@ fn test_write_manifest_records_source_note_per_task() {
             cover_url: None,
             track_number: None,
             total_tracks: None,
+            lyrics: None,
         },
     };
     let tasks = vec![mk("lossy"), mk("clean")];

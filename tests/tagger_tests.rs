@@ -36,6 +36,7 @@ fn sample_metadata() -> AudioMetadata {
         cover_url: None,
         track_number: Some(3),
         total_tracks: Some(12),
+        lyrics: None,
     }
 }
 
@@ -156,6 +157,80 @@ async fn tag_mp3_skips_cover_when_url_absent() {
     assert!(
         tag.pictures().next().is_none(),
         "không được nhúng ảnh bìa khi cover_url trống"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn tag_mp3_embeds_lyrics_uslt_frame() {
+    let Some(ffmpeg) = find_ffmpeg() else {
+        eprintln!("Bỏ qua test: FFmpeg khả dụng qua PATH là bắt buộc");
+        return;
+    };
+    let dir = test_dir("lyrics_embed");
+    let mp3_path = dir.join("sample.mp3");
+    generate_mp3(&ffmpeg, &mp3_path);
+
+    let mut meta = sample_metadata();
+    meta.lyrics = Some("Lời bài hát kiểm thử".to_string());
+    Tagger::new()
+        .tag_mp3(&mp3_path, &meta)
+        .await
+        .expect("tag_mp3 phải nhúng được lời bài hát");
+
+    let tag = id3::Tag::read_from_path(&mp3_path).expect("phải đọc lại được tag ID3");
+    let lyrics: Vec<_> = tag.lyrics().collect();
+    assert_eq!(lyrics.len(), 1);
+    assert_eq!(lyrics[0].text, "Lời bài hát kiểm thử");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn set_lyrics_ffmpeg_writes_lyrics_metadata() {
+    let Some(ffmpeg) = find_ffmpeg() else {
+        eprintln!("Bỏ qua test: FFmpeg khả dụng qua PATH là bắt buộc");
+        return;
+    };
+    let dir = test_dir("lyrics_mux");
+    let flac_path = dir.join("tone.flac");
+    let flac_status = Command::new(&ffmpeg)
+        .arg("-y")
+        .arg("-f")
+        .arg("lavfi")
+        .arg("-i")
+        .arg("sine=frequency=440:duration=1")
+        .arg(&flac_path)
+        .status()
+        .expect("Failed to generate flac");
+    assert!(flac_status.success());
+
+    let muxed = ghita_download::core::transcoder::set_lyrics_ffmpeg(
+        &flac_path,
+        "Loi bai hat test",
+        &ffmpeg,
+    )
+    .expect("set_lyrics_ffmpeg phải thành công trên flac");
+    assert!(muxed.exists());
+    assert!(std::fs::metadata(&muxed).unwrap().len() > 0);
+
+    let probe = Command::new(&ffmpeg)
+        .arg("-hide_banner")
+        .arg("-i")
+        .arg(&muxed)
+        .output()
+        .expect("Failed to probe muxed file");
+    let probe_text = String::from_utf8_lossy(&probe.stderr);
+    assert!(
+        probe_text.to_ascii_lowercase().contains("lyrics"),
+        "đầu ra phải giữ tag lyrics: {}",
+        probe_text
+    );
+    assert!(
+        probe_text.contains("Loi bai hat test"),
+        "tag lyrics phải giữ nguyên nội dung: {}",
+        probe_text
     );
 
     let _ = std::fs::remove_dir_all(&dir);

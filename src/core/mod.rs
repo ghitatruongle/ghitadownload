@@ -2,6 +2,7 @@ pub mod batch;
 pub mod cancel;
 pub mod config;
 pub mod downloader;
+pub mod lyrics;
 pub mod manifest;
 pub mod matching;
 pub mod platform;

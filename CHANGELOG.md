@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.0.5-beta] - 2026-10-28
+
+### Added
+- Lyrics embedding powered by LRCLIB (free, no login): the new `core/lyrics` module fetches plain and synced lyrics by artist/title/duration (`/api/get` with `/api/search` fallback, scoring candidates by duration proximity and synced-lyrics availability), embeds plain lyrics as an ID3 USLT frame for MP3 (`id3::frame::Lyrics`) and as a `lyrics` metadata tag for FLAC/M4A/Opus via a stream-copy FFmpeg mux pass, and writes a synced `.lrc` sidecar next to each audio file. Lyrics fetch/embed failures never fail a task; WAV/Original/Video outputs are skipped. Enabled by default; toggle in the dashboard settings ("Tự động tải lời bài hát") or headless via `--no-lyrics` (conflicts with `--retry-failed`/`--resume`).
+- `--resume` headless flag: every batch now writes `pending_tasks.json` (task list + settings snapshot) into the output directory at start, rewrites it as each task completes, and removes it when the batch finishes; if the process is killed mid-run, `ghitadownload --resume --output <DIR>` re-downloads exactly the remaining tasks. Runs alone with `--output`, mirroring `--retry-failed`.
+- yt-dlp pinned to 2026.10.26 (was 2026.08.19) across all four pin sites (`src/utils/env.rs` constants + pin test, `release/yt-dlp.json`, `release/yt-dlp.sha256`, `bin/yt-dlp.exe` payload), SHA-256 `f5389d3698ecde4ef06f4e6b1ce0294fe9ac1396228c8990b8d3416d6d177a7d` taken from the official `SHA2-256SUMS` of that release.
+
+### Changed
+- Upgraded crossterm 0.25 → 0.28 and dirs 5 → 6. The multi-link input now filters `KeyEventKind::Press`, required since crossterm 0.26 emits Release key events on Windows (otherwise every keystroke would register twice).
+- Lockfile upgrade rustls 0.23.46 / rustls-webpki 0.103.16 (fixes cargo audit advisories; carried over from the post-alpha commit `7303eba`).
+
+### Fixed
+- LRCLIB junk-entry defense: `/api/get` can return placeholder entries whose lyrics are trivial strings (e.g. `"probe"` junk left behind by other clients probing the API), so a real-looking track could embed a one-word lyric. The lyrics fetcher now rejects trivial lyrics (every provided field under 30 characters and 4 words) and falls through to `/api/search`, picking the best real candidate instead.
+- The code review pass also fixed a Suno download bug where a network error mid-stream was silently treated as a completed download (truncated files could be saved); the downloader now discards the partial payload and tries the next fallback URL, and the encryption detection now recognizes ID3/OggS/RIFF/fLaC/FORM signatures in addition to ftyp/EBML.
+
+### Release artifact
+- `Release/ghitadownload_0.0.5-beta.exe`
+- SHA-256: `AE1A76D14803C570832F23A63B47CBEEC272CE9061355D4EF8EDA73D9ACFF64B`
+
+### Compatibility
+- Existing CLI flags, format/quality names, exit codes, and `AppConfig`/`FailedQueue` JSON remain compatible (`fetch_lyrics` on `DownloadSettings`/`AppConfig` and `lyrics` on `AudioMetadata` carry `serde(default)`). `pending_tasks.json` is a new file written next to downloads and removed when a batch completes; old config/queue files without the new fields load unchanged.
+
 ## [0.0.5-alpha] - 2026-10-15
 
 ### Added

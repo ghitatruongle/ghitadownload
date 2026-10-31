@@ -38,6 +38,7 @@ pub(super) async fn process_task(
     handle: ProgressBar,
     ctx: TaskContext,
 ) -> TaskOutcome {
+    let mut task = task;
     let TaskContext {
         settings,
         ytdlp,
@@ -388,6 +389,41 @@ pub(super) async fn process_task(
         }
     }
 
+    let mut lyrics_synced: Option<String> = None;
+    if ok
+        && settings.fetch_lyrics
+        && matches!(
+            fmt,
+            AudioFormat::Mp3 | AudioFormat::Flac | AudioFormat::Aac | AudioFormat::Opus
+        )
+    {
+        match crate::core::lyrics::fetch_lyrics(&task.metadata, task.expected_duration_secs).await {
+            Ok(Some(lyrics)) => {
+                if lyrics.plain.is_some() || lyrics.synced.is_some() {
+                    logs.push(format!(
+                        "    {} {}",
+                        "🎵".magenta(),
+                        "Đã tải lời bài hát".green()
+                    ));
+                }
+                if lyrics.plain.is_some() {
+                    task.metadata.lyrics = lyrics.plain;
+                }
+                lyrics_synced = lyrics.synced;
+            }
+            Ok(None) => logs.push(format!(
+                "    {} {}",
+                "ℹ".yellow(),
+                "Không tìm thấy lời bài hát trên LRCLIB"
+            )),
+            Err(e) => logs.push(format!(
+                "    {} Lấy lời bài hát bỏ qua: {}",
+                "ℹ".yellow(),
+                e.to_string().replace(['\r', '\n'], " ").trim()
+            )),
+        }
+    }
+
     if ok && fmt == AudioFormat::Mp3 {
         match tagger.tag_mp3(&final_path, &task.metadata).await {
             Ok(_) => logs.push(format!(
@@ -439,7 +475,53 @@ pub(super) async fn process_task(
         }
     }
 
+    if ok
+        && task.metadata.lyrics.is_some()
+        && matches!(
+            fmt,
+            AudioFormat::Flac | AudioFormat::Aac | AudioFormat::Opus
+        )
+    {
+        let embed_input = final_path.clone();
+        let embed_lyrics = task.metadata.lyrics.clone().unwrap_or_default();
+        let embed_ffmpeg = ffmpeg.clone();
+        let embed_res = tokio::task::spawn_blocking(move || {
+            crate::core::transcoder::set_lyrics_ffmpeg(&embed_input, &embed_lyrics, &embed_ffmpeg)
+        })
+        .await
+        .unwrap_or_else(|error| Err(anyhow!("Tác vụ nhúng lời bài hát bị ngắt: {error}")));
+        match embed_res {
+            Ok(muxed) => match crate::utils::fs::replace_file(&muxed, &final_path) {
+                Ok(()) => logs.push(format!(
+                    "    {} {}",
+                    "🎵".magenta(),
+                    "Nhúng lời bài hát: Xong".green()
+                )),
+                Err(e) => logs.push(format!(
+                    "    {} Không thay thế tệp sau nhúng lời bài hát: {}",
+                    "✖".red(),
+                    e
+                )),
+            },
+            Err(e) => logs.push(format!(
+                "    {} Nhúng lời bài hát thất bại: {}",
+                "✖".red(),
+                e
+            )),
+        }
+    }
+
     if ok {
+        if let Some(ref synced) = lyrics_synced {
+            match crate::core::lyrics::write_synced_lrc(&final_path, synced) {
+                Ok(path) => logs.push(format!(
+                    "    {} Lưu lời đồng bộ: {}",
+                    "🎵".magenta(),
+                    path.display().to_string().bright_white()
+                )),
+                Err(e) => logs.push(format!("    {} Ghi tệp .lrc thất bại: {}", "✖".red(), e)),
+            }
+        }
         logs.push(format!(
             "    {} Lưu tệp thành công: {}",
             "✔".green().bold(),

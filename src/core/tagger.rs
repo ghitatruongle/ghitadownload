@@ -16,6 +16,8 @@ pub struct AudioMetadata {
     pub track_number: Option<u32>,
     #[serde(default)]
     pub total_tracks: Option<u32>,
+    #[serde(default)]
+    pub lyrics: Option<String>,
 }
 
 pub struct Tagger {
@@ -59,6 +61,14 @@ impl Tagger {
 
         if let Some(total) = meta.total_tracks {
             tag.set_total_tracks(total);
+        }
+
+        if let Some(ref lyrics) = meta.lyrics {
+            tag.add_frame(id3::frame::Lyrics {
+                lang: "vie".to_string(),
+                description: String::new(),
+                text: lyrics.clone(),
+            });
         }
 
         if let Some(ref raw_cover_url) = meta.cover_url {

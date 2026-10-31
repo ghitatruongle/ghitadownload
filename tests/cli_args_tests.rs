@@ -409,3 +409,35 @@ fn update_ytdlp_conflicts_with_check_ytdlp() {
         .validate()
         .is_err());
 }
+
+#[test]
+fn resume_accepts_only_its_output_directory() {
+    assert!(parse(&["--resume", "--output", "out"]).validate().is_ok());
+    assert!(parse(&[
+        "--resume",
+        "--output",
+        "out",
+        "--link",
+        "https://example.com"
+    ])
+    .validate()
+    .is_err());
+    assert!(parse(&["--resume", "--output", "out", "--format", "mp3"])
+        .validate()
+        .is_err());
+    assert!(parse(&["--resume", "--output", "out", "--no-lyrics"])
+        .validate()
+        .is_err());
+    assert!(parse(&["--resume"]).is_headless());
+}
+
+#[test]
+fn no_lyrics_flag_parses_and_conflicts_with_retry_failed() {
+    let args = parse(&["--link", "https://example.com", "--no-lyrics"]);
+    assert!(args.no_lyrics);
+    assert!(args.validate().is_ok());
+    assert!(parse(&["--retry-failed", "--output", "out", "--no-lyrics"])
+        .validate()
+        .is_err());
+    assert!(!parse(&["--no-lyrics"]).is_headless());
+}

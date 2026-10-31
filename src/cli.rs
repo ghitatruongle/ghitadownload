@@ -148,6 +148,7 @@ impl CliApp {
                 active_quality,
                 active_resolution,
                 config.keep_accents,
+                config.fetch_lyrics,
             );
 
             let menu_choices = vec![
@@ -201,6 +202,7 @@ impl CliApp {
                     cookies_file: None,
                     cookies_from_browser: None,
                     raw: false,
+                    fetch_lyrics: config.fetch_lyrics,
                 };
 
                 let batch_processor =
@@ -343,6 +345,18 @@ impl CliApp {
                     .set_keep_accents(keep_accents)
                     .map_err(anyhow::Error::msg)?;
 
+                let lyrics_options = vec![
+                    "Tự động tải & nhúng lời bài hát (LRCLIB, kèm .lrc đồng bộ)",
+                    "Tắt tự động tải lời bài hát",
+                ];
+                let default_lyrics_cursor = if config.fetch_lyrics { 0 } else { 1 };
+                let lyrics_choice = Select::new("🎵 Tự động tải lời bài hát:", lyrics_options)
+                    .with_starting_cursor(default_lyrics_cursor)
+                    .prompt()?;
+                config
+                    .set_fetch_lyrics(lyrics_choice.starts_with("Tự động"))
+                    .map_err(anyhow::Error::msg)?;
+
                 println!(
                     "\n{} Đã cập nhật và áp dụng cài đặt thành công!\n",
                     "✔".green().bold()
@@ -425,6 +439,7 @@ impl CliApp {
         quality: AudioQuality,
         resolution: Option<u32>,
         keep_accents: bool,
+        fetch_lyrics: bool,
     ) {
         let ext = quality.file_extension(format);
         let quality_label = match format {
@@ -454,6 +469,12 @@ impl CliApp {
         );
         println!("│ 🎚 Chất lượng  : {}", quality_label.cyan());
         println!("│ 🔤 Tên tệp     : {}", accent_label.bright_white());
+        let lyrics_label = if fetch_lyrics {
+            "Bật (LRCLIB)"
+        } else {
+            "Tắt"
+        };
+        println!("│ 🎵 Lời bài hát : {}", lyrics_label.bright_white());
         println!(
             "{}",
             "└─────────────────────────────────────────────────────────────".cyan()

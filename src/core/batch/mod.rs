@@ -13,6 +13,7 @@ mod task;
 pub const DEFAULT_CONCURRENCY: usize = 3;
 pub const DURATION_TOLERANCE_SECS: f64 = 10.0;
 pub const FAILED_QUEUE_FILE: &str = "failed_tasks.json";
+pub const PENDING_QUEUE_FILE: &str = "pending_tasks.json";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DownloadTask {
@@ -76,4 +77,37 @@ impl BatchProcessor {
         let queue: FailedQueue = serde_json::from_str(&content)?;
         Ok((queue.settings, queue.tasks))
     }
+
+    pub fn resume_from_file(output_dir: &Path) -> Result<(DownloadSettings, Vec<DownloadTask>)> {
+        let path = output_dir.join(PENDING_QUEUE_FILE);
+        if !path.exists() {
+            return Err(anyhow!(
+                "Không tìm thấy trạng thái batch dở dang tại: {}",
+                path.display()
+            ));
+        }
+        let content = std::fs::read_to_string(&path)?;
+        let state: FailedQueue = serde_json::from_str(&content)?;
+        Ok((state.settings, state.tasks))
+    }
+}
+
+pub fn write_pending_state(
+    output_dir: &Path,
+    temp_dir: &Path,
+    settings: &DownloadSettings,
+    remaining: &[DownloadTask],
+) -> std::io::Result<()> {
+    let state = FailedQueue {
+        settings: settings.clone(),
+        tasks: remaining.to_vec(),
+    };
+    let json = serde_json::to_vec_pretty(&state).map_err(std::io::Error::other)?;
+    let temp_path = temp_dir.join(PENDING_QUEUE_FILE);
+    std::fs::write(&temp_path, json)?;
+    crate::utils::fs::replace_file(&temp_path, &output_dir.join(PENDING_QUEUE_FILE))
+}
+
+pub fn clear_pending_state(output_dir: &Path) {
+    let _ = std::fs::remove_file(output_dir.join(PENDING_QUEUE_FILE));
 }
