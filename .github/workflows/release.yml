@@ -45,7 +45,7 @@ jobs:
 
       - name: Restore pinned yt-dlp cache
         id: ytdlp_cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: bin/yt-dlp.exe
           key: ytdlp-${{ hashFiles('Release/yt-dlp.json') }}
