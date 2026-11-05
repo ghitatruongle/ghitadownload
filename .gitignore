@@ -21,6 +21,8 @@ bin/*
 # Internal Agent Notes
 AGENT.md
 .freebuff/
+.mimosa/
+.zcode/
 
 # Local-only diagnostic script (not shipped in repo)
 scripts/check-may-khac.bat

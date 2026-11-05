@@ -77,11 +77,39 @@ fn config_round_trip_preserves_saved_directory() {
 }
 
 #[test]
-fn invalid_config_returns_error() {
+fn invalid_config_falls_back_to_default_and_backs_up() {
     let directory = test_directory("invalid");
     let path = directory.join("ghita_config.json");
     std::fs::write(&path, b"not json").unwrap();
-    assert!(AppConfig::try_load_from(&path).is_err());
+    let config = AppConfig::try_load_from(&path).unwrap();
+    assert_eq!(
+        config.initial_output_dir(PathBuf::from("fallback")),
+        AppConfig::default().initial_output_dir(PathBuf::from("fallback"))
+    );
+    assert!(!path.exists(), "tệp hỏng phải được đổi tên tránh va chạm");
+    let backup_count = std::fs::read_dir(&directory)
+        .unwrap()
+        .filter_map(Result::ok)
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .contains("ghita_config.json.corrupt-")
+        })
+        .count();
+    assert_eq!(backup_count, 1, "phải còn đúng 1 bản sao hỏng");
+    let _ = std::fs::remove_dir_all(directory);
+}
+
+#[test]
+fn config_round_trip_writes_schema_version() {
+    let directory = test_directory("schema_version");
+    let path = directory.join("ghita_config.json");
+    AppConfig::default().try_save_to(&path).unwrap();
+    let content = std::fs::read_to_string(&path).unwrap();
+    assert!(content.contains("schema_version"));
+    let loaded = AppConfig::try_load_from(&path).unwrap();
+    assert_eq!(loaded.schema_version, 1);
     let _ = std::fs::remove_dir_all(directory);
 }
 

@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.0.5] - 2026-11-06
+
+### Fixed
+- Batch summary double-write: the failed-queue save block ran twice per batch (duplicate `failed_tasks.json` write, duplicate log line, and a second unconditional `clear_pending_state`); the cleanup path now writes the queue exactly once and only clears pending state on non-cancelled runs.
+- Transcoder panic paths: two `.expect("stderr phải được pipe")` call sites on the FFmpeg stderr handle panicked instead of returning an error; both now fail gracefully (kill the child process, return `anyhow!`).
+- Setup dead fallbacks: `find_local_app`/`find_local_ytdlp` chained relative `target/release|debug` candidates that could never pass the `is_absolute()` filter; they now resolve the repo `target/` via `CARGO_MANIFEST_DIR` and check existence directly.
+- Playlist classification: `PlatformParser::is_playlist_or_album` no longer treats direct media URLs as playlists (was flagged by the platform-edge test); the test now asserts the negative case.
+- Manifest cost: `write_manifest` matched failed tasks and source notes by linear scans per task (O(n·m)); it now builds a `HashSet`/`HashMap` up front.
+
+### Release artifact
+- `Release/ghitadownload_0.0.5.exe`
+- SHA-256: `F12B74A38C48C6CBB1C5B11C4CAAB31D231B51EB2AB7A1920CBBF5F4FC4D4D57`
+
 ## [0.0.5-beta] - 2026-10-28
 
 ### Added

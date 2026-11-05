@@ -177,7 +177,6 @@ impl PlatformParser {
                 | UrlType::YouTubePlaylist(_)
                 | UrlType::YouTubeMusicPlaylist(_)
                 | UrlType::SunoPlaylist(_)
-                | UrlType::DirectMedia(_)
         )
     }
 }

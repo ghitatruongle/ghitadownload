@@ -3,7 +3,9 @@ use id3::frame::{Picture, PictureType};
 use id3::{Tag, TagLike, Version};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AudioMetadata {
@@ -22,6 +24,7 @@ pub struct AudioMetadata {
 
 pub struct Tagger {
     http_client: Client,
+    cover_cache: Mutex<HashMap<String, (Vec<u8>, String)>>,
 }
 
 impl Default for Tagger {
@@ -35,7 +38,10 @@ impl Tagger {
         let http_client = crate::utils::http::shared_client()
             .cloned()
             .unwrap_or_default();
-        Self { http_client }
+        Self {
+            http_client,
+            cover_cache: Mutex::new(HashMap::new()),
+        }
     }
 
     pub async fn tag_mp3(&self, file_path: &Path, meta: &AudioMetadata) -> Result<()> {
@@ -72,13 +78,14 @@ impl Tagger {
         }
 
         if let Some(ref raw_cover_url) = meta.cover_url {
-            let (bytes, mime_type) = self.fetch_cover_bytes(raw_cover_url).await?;
-            tag.add_frame(Picture {
-                mime_type,
-                picture_type: PictureType::CoverFront,
-                description: "Cover Art".to_string(),
-                data: bytes,
-            });
+            if let Ok((bytes, mime_type)) = self.fetch_cover_bytes(raw_cover_url).await {
+                tag.add_frame(Picture {
+                    mime_type,
+                    picture_type: PictureType::CoverFront,
+                    description: "Cover Art".to_string(),
+                    data: bytes,
+                });
+            }
         }
 
         tag.write_to_path(file_path, Version::Id3v24)?;
@@ -96,6 +103,12 @@ impl Tagger {
         } else {
             raw_cover_url.to_string()
         };
+
+        if let Ok(cache) = self.cover_cache.lock() {
+            if let Some(hit) = cache.get(&normalized_url) {
+                return Ok(hit.clone());
+            }
+        }
 
         let response = self
             .http_client
@@ -126,7 +139,11 @@ impl Tagger {
         }
         let mime_type = detect_image_mime(&bytes)
             .ok_or_else(|| anyhow!("Dữ liệu ảnh bìa không phải PNG hoặc JPEG hợp lệ"))?;
-        Ok((bytes.to_vec(), mime_type))
+        let result = (bytes.to_vec(), mime_type);
+        if let Ok(mut cache) = self.cover_cache.lock() {
+            cache.insert(normalized_url, result.clone());
+        }
+        Ok(result)
     }
 
     pub async fn fetch_cover_file(

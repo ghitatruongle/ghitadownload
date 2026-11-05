@@ -825,10 +825,17 @@ fn test_is_retryable_status_classification() {
     use ghita_download::utils::http::is_retryable_status;
 
     assert!(is_retryable_status(reqwest::StatusCode::TOO_MANY_REQUESTS));
-    assert!(!is_retryable_status(
+    assert!(is_retryable_status(reqwest::StatusCode::REQUEST_TIMEOUT));
+    assert!(is_retryable_status(
         reqwest::StatusCode::INTERNAL_SERVER_ERROR
     ));
+    assert!(is_retryable_status(reqwest::StatusCode::BAD_GATEWAY));
+    assert!(is_retryable_status(
+        reqwest::StatusCode::SERVICE_UNAVAILABLE
+    ));
+    assert!(is_retryable_status(reqwest::StatusCode::GATEWAY_TIMEOUT));
     assert!(!is_retryable_status(reqwest::StatusCode::BAD_REQUEST));
+    assert!(!is_retryable_status(reqwest::StatusCode::FORBIDDEN));
 }
 
 #[tokio::test]

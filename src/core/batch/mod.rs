@@ -37,6 +37,7 @@ pub struct BatchOutcome {
 
 struct TaskOutcome {
     ok: bool,
+    cancelled: bool,
     logs: Vec<String>,
     task: DownloadTask,
     task_index: usize,

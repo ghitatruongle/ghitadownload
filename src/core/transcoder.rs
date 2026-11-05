@@ -57,7 +57,10 @@ impl Transcoder {
         let mut child = tokio::process::Command::from(cmd)
             .spawn()
             .map_err(|e| anyhow!("Không thể chạy FFmpeg: {}", e))?;
-        let mut stderr_pipe = child.stderr.take().expect("stderr phải được pipe");
+        let Some(mut stderr_pipe) = child.stderr.take() else {
+            let _ = child.kill().await;
+            return Err(anyhow!("Không đọc được stderr của FFmpeg"));
+        };
         let stderr_task = tokio::spawn(async move {
             let mut buf = Vec::new();
             let _ = tokio::io::AsyncReadExt::read_to_end(&mut stderr_pipe, &mut buf).await;
@@ -257,7 +260,10 @@ impl Transcoder {
         let mut child = tokio::process::Command::from(cmd)
             .spawn()
             .map_err(|e| anyhow!("Không thể chạy FFmpeg: {}", e))?;
-        let mut stderr_pipe = child.stderr.take().expect("stderr phải được pipe");
+        let Some(mut stderr_pipe) = child.stderr.take() else {
+            let _ = child.kill().await;
+            return Err(anyhow!("Không đọc được stderr của FFmpeg"));
+        };
         let stderr_task = tokio::spawn(async move {
             let mut buf = Vec::new();
             let _ = tokio::io::AsyncReadExt::read_to_end(&mut stderr_pipe, &mut buf).await;
@@ -292,6 +298,15 @@ impl Transcoder {
 }
 
 pub fn embed_cover_ffmpeg(input: &Path, cover: &Path, ffmpeg: &Path) -> Result<PathBuf> {
+    embed_cover_and_lyrics_ffmpeg(input, cover, None, ffmpeg)
+}
+
+pub fn embed_cover_and_lyrics_ffmpeg(
+    input: &Path,
+    cover: &Path,
+    lyrics: Option<&str>,
+    ffmpeg: &Path,
+) -> Result<PathBuf> {
     if !input.is_file() {
         return Err(anyhow!("Không tìm thấy file đầu vào: {}", input.display()));
     }
@@ -317,7 +332,8 @@ pub fn embed_cover_ffmpeg(input: &Path, cover: &Path, ffmpeg: &Path) -> Result<P
     } else {
         "mjpeg"
     };
-    let result = Command::new(ffmpeg)
+    let mut command = Command::new(ffmpeg);
+    command
         .arg("-y")
         .arg("-i")
         .arg(input)
@@ -332,7 +348,11 @@ pub fn embed_cover_ffmpeg(input: &Path, cover: &Path, ffmpeg: &Path) -> Result<P
         .arg("-c:v")
         .arg(image_codec)
         .arg("-disposition:v:0")
-        .arg("attached_pic")
+        .arg("attached_pic");
+    if let Some(lyrics) = lyrics {
+        command.arg("-metadata").arg(format!("lyrics={}", lyrics));
+    }
+    let result = command
         .arg(&output)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())

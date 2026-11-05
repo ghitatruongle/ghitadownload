@@ -18,6 +18,8 @@ use super::{
     FailedQueue, TaskOutcome, DEFAULT_CONCURRENCY, FAILED_QUEUE_FILE,
 };
 
+const PENDING_WRITE_EVERY: usize = 5;
+
 impl BatchProcessor {
     pub async fn execute_batch(&self, tasks: &[DownloadTask]) -> Result<BatchOutcome> {
         if tasks.is_empty() {
@@ -63,8 +65,6 @@ impl BatchProcessor {
         let has_node = self.has_node;
         let total = tasks.len();
         let cancel = Cancellation::new();
-        let global_cancel = global();
-        let mut global_rx = global_cancel.subscribe();
 
         let mut set = JoinSet::new();
 
@@ -86,6 +86,7 @@ impl BatchProcessor {
                     Err(_) => {
                         return Ok(TaskOutcome {
                             ok: false,
+                            cancelled: false,
                             logs: vec![format!("    {} Mất khóa điều phối tác vụ", "✖".red())],
                             task,
                             task_index: index,
@@ -97,6 +98,7 @@ impl BatchProcessor {
                 if cancel.is_cancelled() || global().is_cancelled() {
                     return Ok(TaskOutcome {
                         ok: false,
+                        cancelled: true,
                         logs: vec![format!("    {} {}", "✖".red(), "Đã hủy")],
                         task,
                         task_index: index,
@@ -134,78 +136,114 @@ impl BatchProcessor {
         let mut completed_ok: std::collections::HashSet<usize> = std::collections::HashSet::new();
         let logs_to_terminal = std::io::stdout().is_terminal();
 
-        loop {
-            tokio::select! {
-                joined = set.join_next() => {
-                    let Some(joined) = joined else { break };
-                    match joined {
-                        Ok(Ok(outcome)) => {
-                            for line in &outcome.logs {
-                                if logs_to_terminal {
-                                    let _ = multi.println(line);
-                                } else {
-                                    println!("{line}");
-                                }
-                            }
-                            source_notes.push((outcome.task_index, outcome.source_note));
-                            if outcome.ok {
-                                success_count += 1;
-                                completed_ok.insert(outcome.task_index);
-                                let remaining: Vec<DownloadTask> = tasks
-                                    .iter()
-                                    .enumerate()
-                                    .filter(|(index, _)| !completed_ok.contains(index))
-                                    .map(|(_, task)| task.clone())
-                                    .collect();
-                                if let Err(error) = write_pending_state(
-                                    &clean_output_dir,
-                                    &temp_dir,
-                                    &self.settings,
-                                    &remaining,
-                                ) {
-                                    println!(
-                                        "{}",
-                                        format!(
-                                            "  Không thể cập nhật trạng thái resume: {}",
-                                            error
-                                        )
-                                        .yellow()
-                                    );
-                                }
-                            } else {
-                                failed_tasks.push((outcome.task_index, outcome.task));
-                            }
-                        }
-                        Ok(Err((index, e))) => {
-                            let message = format!("    Lỗi tác vụ {}: {}", index + 1, e);
-                            if logs_to_terminal {
-                                let _ = multi.println(format!("{}", message.red()));
-                            } else {
-                                println!("{}", message.red());
-                            }
-                            failed_tasks.push((index, tasks[index].clone()));
-                        }
-                        Err(e) => {
-                            let message = format!("    Lỗi điều phối tác vụ: {}", e);
-                            if logs_to_terminal {
-                                let _ = multi.println(format!("{}", message.red()));
-                            } else {
-                                println!("{}", message.red());
-                            }
-                        }
+        {
+            let watcher_cancel = cancel.clone();
+            tokio::spawn(async move {
+                let mut watch_rx = global().subscribe();
+                while let Ok(()) = watch_rx.changed().await {
+                    if *watch_rx.borrow() {
+                        watcher_cancel.cancel();
+                        break;
                     }
                 }
-                changed = global_rx.changed() => {
-                    if changed.is_ok() && *global_rx.borrow() {
-                        cancel.cancel();
+            });
+        }
+
+        while let Some(joined) = set.join_next().await {
+            match joined {
+                Ok(Ok(outcome)) => {
+                    for line in &outcome.logs {
+                        if logs_to_terminal {
+                            let _ = multi.println(line);
+                        } else {
+                            println!("{line}");
+                        }
+                    }
+                    source_notes.push((outcome.task_index, outcome.source_note));
+                    if outcome.ok {
+                        success_count += 1;
+                        completed_ok.insert(outcome.task_index);
+                        if completed_ok.len().is_multiple_of(PENDING_WRITE_EVERY) {
+                            let remaining: Vec<DownloadTask> = tasks
+                                .iter()
+                                .enumerate()
+                                .filter(|(index, _)| !completed_ok.contains(index))
+                                .map(|(_, task)| task.clone())
+                                .collect();
+                            if let Err(error) = write_pending_state(
+                                &clean_output_dir,
+                                &temp_dir,
+                                &self.settings,
+                                &remaining,
+                            ) {
+                                println!(
+                                    "{}",
+                                    format!("  Không thể cập nhật trạng thái resume: {}", error)
+                                        .yellow()
+                                );
+                            }
+                        }
+                    } else if !outcome.cancelled {
+                        failed_tasks.push((outcome.task_index, outcome.task));
+                    }
+                }
+                Ok(Err((index, e))) => {
+                    let message = format!("    Lỗi tác vụ {}: {}", index + 1, e);
+                    if logs_to_terminal {
+                        let _ = multi.println(format!("{}", message.red()));
+                    } else {
+                        println!("{}", message.red());
+                    }
+                    if !cancel.is_cancelled() {
+                        failed_tasks.push((index, tasks[index].clone()));
+                    }
+                }
+                Err(e) => {
+                    let message = format!("    Lỗi điều phối tác vụ: {}", e);
+                    if logs_to_terminal {
+                        let _ = multi.println(format!("{}", message.red()));
+                    } else {
+                        println!("{}", message.red());
                     }
                 }
             }
         }
 
+        let cancelled = cancel.is_cancelled();
+
         failed_tasks.sort_by_key(|(index, _)| *index);
         let failed_tasks: Vec<DownloadTask> =
             failed_tasks.into_iter().map(|(_, task)| task).collect();
+
+        if cancelled {
+            let remaining: Vec<DownloadTask> = tasks
+                .iter()
+                .enumerate()
+                .filter(|(index, _)| !completed_ok.contains(index))
+                .map(|(_, task)| task.clone())
+                .collect();
+            let remaining_count = remaining.len();
+            if let Err(error) =
+                write_pending_state(&clean_output_dir, &temp_dir, &self.settings, &remaining)
+            {
+                println!(
+                    "{}",
+                    format!("  Không thể lưu trạng thái resume sau khi dừng: {}", error).yellow()
+                );
+            }
+            println!(
+                "{}",
+                format!(
+                    "  Đã dừng theo yêu cầu (Ctrl+C) — {} bài còn lại đã lưu, dùng --resume để tiếp tục",
+                    remaining_count
+                )
+                .yellow()
+            );
+        }
+
+        if !cancelled {
+            clear_pending_state(&clean_output_dir);
+        }
 
         if !failed_tasks.is_empty() {
             let queue = FailedQueue {
@@ -242,7 +280,6 @@ impl BatchProcessor {
         } else {
             let _ = std::fs::remove_file(clean_output_dir.join(FAILED_QUEUE_FILE));
         }
-        clear_pending_state(&clean_output_dir);
         let _ = std::fs::remove_dir_all(&temp_dir);
 
         let manifest_result = crate::core::manifest::write_manifest(

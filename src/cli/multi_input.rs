@@ -64,6 +64,63 @@ impl MultiLinkInput {
         None
     }
 
+    fn looks_like_link(token: &str) -> bool {
+        let lower = token.to_ascii_lowercase();
+        lower.starts_with("http://")
+            || lower.starts_with("https://")
+            || lower.starts_with("www.")
+            || lower.starts_with("spotify:")
+    }
+
+    fn split_link_line(line: &str) -> Vec<String> {
+        let fragments: Vec<String> = line
+            .split([',', ';'])
+            .map(str::trim)
+            .filter(|fragment| !fragment.is_empty())
+            .map(str::to_string)
+            .collect();
+        if fragments.len() > 1
+            && fragments
+                .iter()
+                .all(|fragment| Self::looks_like_link(fragment))
+        {
+            fragments
+        } else {
+            vec![line.to_string()]
+        }
+    }
+
+    fn split_paste(pasted: &str) -> Vec<String> {
+        let mut items = Vec::new();
+        for line in pasted.lines() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            if Self::looks_like_link(trimmed) {
+                items.extend(Self::split_link_line(trimmed));
+                continue;
+            }
+            let tokens: Vec<String> = trimmed
+                .split_whitespace()
+                .map(str::trim)
+                .filter(|token| !token.is_empty())
+                .map(str::to_string)
+                .collect();
+            if tokens.len() > 1 && tokens.iter().all(|token| Self::looks_like_link(token)) {
+                items.extend(tokens);
+            } else {
+                for fragment in trimmed.split([',', ';']) {
+                    let fragment = fragment.trim();
+                    if !fragment.is_empty() {
+                        items.push(fragment.to_string());
+                    }
+                }
+            }
+        }
+        items
+    }
+
     fn handle_paste(
         links: &mut Vec<String>,
         current_idx: &mut usize,
@@ -71,22 +128,22 @@ impl MultiLinkInput {
         status_message: &mut Option<String>,
         pasted: &str,
     ) {
-        let items: Vec<String> = pasted
-            .lines()
-            .flat_map(|line| line.split([',', ';']))
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .map(str::to_string)
-            .collect();
+        let items = Self::split_paste(pasted);
         if items.is_empty() {
             return;
         }
-        if links[*current_idx].trim().is_empty() {
-            links[*current_idx] = items[0].clone();
+        let current_line = links[*current_idx].clone();
+        let chars: Vec<char> = current_line.chars().collect();
+        let cursor = (*cursor_char_pos).min(chars.len());
+        let head: String = chars[..cursor].iter().collect();
+        let tail: String = chars[cursor..].iter().collect();
+        let first = if current_line.trim().is_empty() {
+            items[0].clone()
         } else {
-            links.push(items[0].clone());
-            *current_idx = links.len() - 1;
-        }
+            format!("{}{}{}", head, items[0], tail)
+        };
+        links[*current_idx] = first;
+
         for item in items.iter().skip(1) {
             links.push(item.clone());
             *current_idx = links.len() - 1;
@@ -511,6 +568,21 @@ impl MultiLinkInput {
                     }
                     continue;
                 }
+            }
+
+            if Self::looks_like_link(trimmed) {
+                result.extend(Self::split_link_line(trimmed));
+                continue;
+            }
+            let tokens: Vec<String> = trimmed
+                .split_whitespace()
+                .map(str::trim)
+                .filter(|token| !token.is_empty())
+                .map(str::to_string)
+                .collect();
+            if tokens.len() > 1 && tokens.iter().all(|token| Self::looks_like_link(token)) {
+                result.extend(tokens);
+                continue;
             }
 
             for item in trimmed.split([',', ';', '\n', '\r']) {

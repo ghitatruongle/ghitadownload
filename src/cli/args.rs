@@ -45,6 +45,9 @@ pub struct CliArgs {
     #[arg(long = "no-lyrics")]
     pub no_lyrics: bool,
 
+    #[arg(long = "lyrics")]
+    pub lyrics: bool,
+
     #[arg(long = "update-ytdlp", visible_alias = "update-tools")]
     pub update_ytdlp: bool,
 
@@ -116,9 +119,13 @@ impl CliArgs {
             || self.cookies.is_some()
             || self.cookies_from_browser.is_some()
             || self.raw
+            || self.lyrics
     }
 
     pub fn validate(&self) -> Result<(), String> {
+        if self.lyrics && self.no_lyrics {
+            return Err("--lyrics và --no-lyrics không được dùng cùng lúc".to_string());
+        }
         if self.update_ytdlp {
             let has_conflict = !self.links.is_empty()
                 || self.file.is_some()
@@ -431,14 +438,16 @@ impl CliArgs {
                 },
             };
             let video_resolution = if format == AudioFormat::Video {
-                match self.resolution.as_deref() {
-                    Some("best") | Some("max") | Some("BEST") | Some("MAX") => None,
-                    Some(value) => match value.parse::<u32>() {
-                        Ok(resolution) => Some(resolution),
-                        Err(_) => {
-                            eprintln!("❌ Độ phân giải không hợp lệ: {value}");
-                            return 1;
-                        }
+                match self.resolution.as_deref().map(str::to_ascii_lowercase) {
+                    Some(value) => match value.as_str() {
+                        "best" | "max" => None,
+                        _ => match value.parse::<u32>() {
+                            Ok(resolution) => Some(resolution),
+                            Err(_) => {
+                                eprintln!("❌ Độ phân giải không hợp lệ: {value}");
+                                return 1;
+                            }
+                        },
                     },
                     None => config.video_resolution,
                 }
@@ -455,7 +464,7 @@ impl CliArgs {
                 cookies_file: self.cookies.clone(),
                 cookies_from_browser: self.cookies_from_browser.clone(),
                 raw: self.raw,
-                fetch_lyrics: !self.no_lyrics && config.fetch_lyrics,
+                fetch_lyrics: self.lyrics || (!self.no_lyrics && config.fetch_lyrics),
             };
             let processor = BatchProcessor::new(
                 settings.clone(),

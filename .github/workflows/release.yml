@@ -104,5 +104,5 @@ jobs:
 
             - Artifact: `${{ steps.meta.outputs.artifact }}`
             - SHA-256: `${{ steps.meta.outputs.sha256 }}`
-            - Bundle yt-dlp baseline: `2026.08.19` (SHA-256 pinned in `Release/yt-dlp.json`)
+            - Bundle yt-dlp baseline: `2026.10.26` (SHA-256 pinned in `Release/yt-dlp.json`)
             - Artifact verified by `scripts/verify_release.ps1`: Windows PE, embedded version and payload-name evidence, no development placeholder.

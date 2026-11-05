@@ -141,7 +141,7 @@ fn playlist_classification_covers_playlist_and_direct_media_variants() {
     assert!(Parser::is_playlist_or_album(
         &UrlType::YouTubeMusicPlaylist("url".to_string())
     ));
-    assert!(Parser::is_playlist_or_album(&UrlType::DirectMedia(
+    assert!(!Parser::is_playlist_or_album(&UrlType::DirectMedia(
         "url".to_string()
     )));
     assert!(!Parser::is_playlist_or_album(&UrlType::YouTubeVideo(

@@ -4,7 +4,8 @@ use serde_json::Value;
 use std::sync::atomic::Ordering;
 use std::sync::LazyLock;
 
-use crate::utils::http::{shared_client, with_retry};
+use crate::utils::http::{download_client, shared_client, with_retry};
+use std::time::Duration;
 
 static OG_TITLE_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r#"<meta\s+property=["']og:title["']\s+content=["']([^"']+)["']"#).unwrap()
@@ -340,7 +341,7 @@ impl SunoClient {
         let api_url = format!("https://studio-api.prod.suno.com/api/clip/{}", uuid);
         let api_status = std::sync::atomic::AtomicU16::new(0);
         let api_status_ref = &api_status;
-        let api_attempt: Result<Option<Value>> = with_retry(|| {
+        let api_attempt: Result<Value> = with_retry(|| {
             let client = client.clone();
             let api_url = api_url.clone();
             async move {
@@ -349,20 +350,17 @@ impl SunoClient {
                     .header("Accept", "application/json")
                     .send()
                     .await?;
-                if response.status().is_success() {
-                    let value: Value = response
-                        .json()
-                        .await
-                        .map_err(|error| anyhow!("JSON metadata Suno không hợp lệ: {error}"))?;
-                    Ok(Some(value))
-                } else {
-                    api_status_ref.store(response.status().as_u16(), Ordering::Relaxed);
-                    Ok(None)
-                }
+                api_status_ref.store(response.status().as_u16(), Ordering::Relaxed);
+                let value: Value = response
+                    .error_for_status()?
+                    .json()
+                    .await
+                    .map_err(|error| anyhow!("JSON metadata Suno không hợp lệ: {error}"))?;
+                Ok(value)
             }
         })
         .await;
-        if let Ok(Some(value)) = api_attempt {
+        if let Ok(value) = api_attempt {
             return parse_clip_payload(&value, uuid);
         }
         let last_api_status = api_status.load(Ordering::Relaxed);
@@ -464,9 +462,15 @@ impl SunoClient {
         uuid: &str,
         output_path: &std::path::Path,
         progress: Option<&indicatif::ProgressBar>,
+        mut cancel: tokio::sync::watch::Receiver<bool>,
     ) -> Result<()> {
+        if *cancel.borrow() {
+            return Err(anyhow!("Đã hủy"));
+        }
         let meta = self.fetch_track(uuid).await?;
-        let client = Self::http_client()?;
+        let client = download_client()
+            .cloned()
+            .map_err(|error| anyhow!("Không thể tạo HTTP client tải Suno: {error}"))?;
 
         let mut download_urls = vec![meta.audio_url.clone()];
         for u in &meta.fallback_audio_urls {
@@ -494,18 +498,37 @@ impl SunoClient {
 
             let mut resp = resp;
             let mut bytes = Vec::new();
-            let download_interrupted = loop {
-                match resp.chunk().await {
+            let mut download_interrupted = false;
+            loop {
+                let chunk = tokio::select! {
+                    chunk = tokio::time::timeout(
+                        Duration::from_secs(30),
+                        resp.chunk(),
+                    ) => match chunk {
+                        Ok(inner) => inner,
+                        Err(_) => {
+                            download_interrupted = true;
+                            break;
+                        }
+                    },
+                    _ = cancel.changed() => {
+                        return Err(anyhow!("Đã hủy"));
+                    }
+                };
+                match chunk {
                     Ok(Some(chunk)) => {
                         bytes.extend_from_slice(&chunk);
                         if let Some(bar) = progress {
                             bar.inc(chunk.len() as u64);
                         }
                     }
-                    Ok(None) => break false,
-                    Err(_) => break true,
+                    Ok(None) => break,
+                    Err(_) => {
+                        download_interrupted = true;
+                        break;
+                    }
                 }
-            };
+            }
 
             if download_interrupted || bytes.len() < 1024 {
                 continue;
@@ -515,8 +538,11 @@ impl SunoClient {
 
             if is_encrypted {
                 let mut decrypted = bytes.clone();
-                if self.decrypt_clip_media(uuid, &mut decrypted).await.is_ok() {
-                    bytes = decrypted;
+                match self.decrypt_clip_media(uuid, &mut decrypted).await {
+                    Ok(()) if bytes_have_media_signature(&decrypted) => {
+                        bytes = decrypted;
+                    }
+                    _ => continue,
                 }
             }
 

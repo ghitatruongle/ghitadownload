@@ -1,6 +1,6 @@
 param(
-    [string]$ManifestPath = "release/yt-dlp.json",
-    [string]$ShaFilePath = "release/yt-dlp.sha256",
+    [string]$ManifestPath = "Release/yt-dlp.json",
+    [string]$ShaFilePath = "Release/yt-dlp.sha256",
     [string]$EnvSourcePath = "src/utils/env.rs"
 )
 
@@ -21,7 +21,7 @@ $shaFile = (Get-Content -LiteralPath $ShaFilePath -Raw).Trim().ToLowerInvariant(
 $envSource = Get-Content -LiteralPath $EnvSourcePath -Raw
 
 if ($shaFile -ne $manifest.sha256.ToLowerInvariant()) {
-    throw "Pin desync: release/yt-dlp.sha256 does not match release/yt-dlp.json sha256"
+    throw "Pin desync: Release/yt-dlp.sha256 does not match Release/yt-dlp.json sha256"
 }
 if (-not $envSource.Contains($manifest.version)) {
     throw "Pin desync: src/utils/env.rs does not contain pinned version $($manifest.version)"
@@ -78,8 +78,8 @@ Pinned in this repository: **{1}**
 Cần cập nhật đồng bộ các chỗ pin yt-dlp:
 
 - `src/utils/env.rs`: `YTDLP_PINNED_VERSION`, `YTDLP_FALLBACK_URL`, `YTDLP_FALLBACK_SHA256`
-- `release/yt-dlp.json`: `version`, `url`, `sha256`
-- `release/yt-dlp.sha256`
+- `Release/yt-dlp.json`: `version`, `url`, `sha256`
+- `Release/yt-dlp.sha256`
 - `bin/yt-dlp.exe`: payload chính thức từ bản {0}, xác minh bằng `scripts/verify_dependencies.ps1`
 
 Các bước:

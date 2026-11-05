@@ -425,10 +425,16 @@ pub struct AppConfig {
     pub keep_accents: bool,
     #[serde(default = "default_fetch_lyrics")]
     pub fetch_lyrics: bool,
+    #[serde(default = "default_schema_version")]
+    pub schema_version: u32,
 }
 
 fn default_video_resolution() -> Option<u32> {
     Some(1080)
+}
+
+fn default_schema_version() -> u32 {
+    1
 }
 
 impl Default for AppConfig {
@@ -444,6 +450,7 @@ impl Default for AppConfig {
             video_resolution: default_video_resolution(),
             keep_accents: false,
             fetch_lyrics: default_fetch_lyrics(),
+            schema_version: default_schema_version(),
         }
     }
 }
@@ -532,8 +539,28 @@ impl AppConfig {
         }
         let content = std::fs::read_to_string(path)
             .map_err(|error| format!("Không đọc được cấu hình {}: {error}", path.display()))?;
-        let mut config = serde_json::from_str::<AppConfig>(&content)
-            .map_err(|error| format!("Cấu hình {} không hợp lệ: {error}", path.display()))?;
+        let parse_result = serde_json::from_str::<AppConfig>(&content);
+        let mut config = match parse_result {
+            Ok(config) => config,
+            Err(error) => {
+                let stamp = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_nanos();
+                let backup = path.with_extension(format!("json.corrupt-{stamp}"));
+                let renamed = std::fs::rename(path, &backup).is_ok();
+                eprintln!(
+                    "Cảnh báo: cấu hình {} không hợp lệ ({error}). {}Đang dùng cấu hình mặc định.",
+                    path.display(),
+                    if renamed {
+                        format!("Đã lưu bản sao hỏng tại {}. ", backup.display())
+                    } else {
+                        String::new()
+                    }
+                );
+                return Ok(Self::default());
+            }
+        };
         if let Some(ref dir) = config.last_output_dir {
             let value = dir.to_string_lossy();
             let cleaned = value.trim().trim_matches(|c| c == '"' || c == '\'').trim();

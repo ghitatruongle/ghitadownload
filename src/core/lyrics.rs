@@ -1,12 +1,17 @@
 use anyhow::Result;
 use serde::Deserialize;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::{LazyLock, Mutex};
 
 use crate::core::tagger::AudioMetadata;
 use crate::utils::http;
 
 const LRCLIB_GET_API: &str = "https://lrclib.net/api/get";
 const LRCLIB_SEARCH_API: &str = "https://lrclib.net/api/search";
+
+static LYRICS_CACHE: LazyLock<Mutex<HashMap<String, Option<Lyrics>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Lyrics {
@@ -26,6 +31,33 @@ struct LrcLibRecord {
 }
 
 pub async fn fetch_lyrics(
+    meta: &AudioMetadata,
+    expected_duration_secs: Option<u64>,
+) -> Result<Option<Lyrics>> {
+    let cache_key = format!(
+        "{}|{}|{}",
+        meta.title.trim().to_lowercase(),
+        meta.artists
+            .first()
+            .map(|artist| artist.trim().to_lowercase())
+            .unwrap_or_default(),
+        expected_duration_secs.unwrap_or(0)
+    );
+    if let Ok(cache) = LYRICS_CACHE.lock() {
+        if let Some(hit) = cache.get(&cache_key) {
+            return Ok(hit.clone());
+        }
+    }
+    let result = fetch_lyrics_uncached(meta, expected_duration_secs).await;
+    if let Ok(value) = &result {
+        if let Ok(mut cache) = LYRICS_CACHE.lock() {
+            cache.insert(cache_key, value.clone());
+        }
+    }
+    result
+}
+
+async fn fetch_lyrics_uncached(
     meta: &AudioMetadata,
     expected_duration_secs: Option<u64>,
 ) -> Result<Option<Lyrics>> {
