@@ -83,12 +83,16 @@ pub(super) async fn process_task(
         _ => None,
     };
 
+    let mut search_cache: std::collections::HashMap<String, Option<(String, String)>> =
+        std::collections::HashMap::new();
+
     for (attempt_idx, target) in targets.iter().enumerate() {
         if cancel.is_cancelled() {
             handle.finish_and_clear();
             logs.push(format!("    {} {}", "✖".red(), "Đã hủy tải"));
             return TaskOutcome {
                 ok: false,
+                cancelled: true,
                 logs,
                 task,
                 task_index: index,
@@ -120,7 +124,7 @@ pub(super) async fn process_task(
             let s_client = SunoClient::new();
             let p_clone = suno_temp_path.clone();
             match s_client
-                .download_track(&uuid_str, &p_clone, Some(&bar_clone))
+                .download_track(&uuid_str, &p_clone, Some(&bar_clone), cancel.subscribe())
                 .await
             {
                 Ok(()) => p_clone,
@@ -138,16 +142,28 @@ pub(super) async fn process_task(
             let temp = temp_dir.clone();
             let mut tgt = target.clone();
             if tgt.starts_with("ytsearch") {
-                if let Some((picked_url, picked_title)) = rank_search_target(
-                    ytdlp_p.as_path(),
-                    has_node,
-                    settings.cookies_file.as_ref(),
-                    settings.cookies_from_browser.as_deref(),
-                    &tgt,
-                    &task,
-                )
-                .await
-                {
+                let query = tgt
+                    .split_once(':')
+                    .map(|(_, query)| query.trim().to_string())
+                    .unwrap_or_default();
+                let picked = if query.is_empty() {
+                    None
+                } else if let Some(cached) = search_cache.get(&query) {
+                    cached.clone()
+                } else {
+                    let picked = rank_search_target(
+                        ytdlp_p.as_path(),
+                        has_node,
+                        settings.cookies_file.as_ref(),
+                        settings.cookies_from_browser.as_deref(),
+                        &tgt,
+                        &task,
+                    )
+                    .await;
+                    search_cache.insert(query, picked.clone());
+                    picked
+                };
+                if let Some((picked_url, picked_title)) = picked {
                     logs.push(format!(
                         "    {} Khớp bài: chọn kết quả tốt nhất: {}",
                         "🎯".cyan(),
@@ -180,6 +196,7 @@ pub(super) async fn process_task(
                         logs.push(format!("    {} {}", "✖".red(), "Đã hủy tải"));
                         return TaskOutcome {
                             ok: false,
+                            cancelled: true,
                             logs,
                             task,
                             task_index: index,
@@ -197,6 +214,7 @@ pub(super) async fn process_task(
             let _ = std::fs::remove_file(&path);
             return TaskOutcome {
                 ok: false,
+                cancelled: true,
                 logs,
                 task,
                 task_index: index,
@@ -232,7 +250,14 @@ pub(super) async fn process_task(
 
         let mut probed_codec: Option<String> = None;
         let mut probed_bitrate: Option<u64> = None;
-        let check = match verify::probe_media(&path, ff.as_path(), cancel.subscribe()).await {
+        let check = match verify::probe_media(
+            &path,
+            ff.as_path(),
+            requires_audio_stream,
+            cancel.subscribe(),
+        )
+        .await
+        {
             Ok(info) => {
                 probed_codec = info.audio_codec.clone();
                 probed_bitrate = info.audio_bitrate_kbps;
@@ -293,6 +318,7 @@ pub(super) async fn process_task(
             ));
             return TaskOutcome {
                 ok: false,
+                cancelled: false,
                 logs,
                 task,
                 task_index: index,
@@ -340,6 +366,7 @@ pub(super) async fn process_task(
             ));
             return TaskOutcome {
                 ok: false,
+                cancelled: false,
                 logs,
                 task,
                 task_index: index,
@@ -360,24 +387,54 @@ pub(super) async fn process_task(
     let dst = final_path.clone();
     let meta = task.metadata.clone();
     let q = settings.quality;
-    let tr_res = match fmt {
+    let tr_fut: std::pin::Pin<
+        Box<dyn std::future::Future<Output = anyhow::Result<()>> + Send + '_>,
+    > = match fmt {
         AudioFormat::Mp3
         | AudioFormat::Wav
         | AudioFormat::Flac
         | AudioFormat::Aac
-        | AudioFormat::Opus => {
-            tr.transcode(
-                &src,
-                &dst,
-                fmt,
-                q.unwrap_or_else(|| fmt.default_quality()),
-                &meta,
-                cancel.subscribe(),
-            )
-            .await
-        }
-        _ => tr.remux_copy(&src, &dst, &meta, cancel.subscribe()).await,
+        | AudioFormat::Opus => Box::pin(tr.transcode(
+            &src,
+            &dst,
+            fmt,
+            q.unwrap_or_else(|| fmt.default_quality()),
+            &meta,
+            cancel.subscribe(),
+        )),
+        _ => Box::pin(tr.remux_copy(&src, &dst, &meta, cancel.subscribe())),
     };
+
+    let want_lyrics = settings.fetch_lyrics
+        && matches!(
+            fmt,
+            AudioFormat::Mp3 | AudioFormat::Flac | AudioFormat::Aac | AudioFormat::Opus
+        );
+    let lyrics_meta = task.metadata.clone();
+    let lyrics_expected = task.expected_duration_secs;
+    let lyrics_fut = async move {
+        if want_lyrics {
+            crate::core::lyrics::fetch_lyrics(&lyrics_meta, lyrics_expected).await
+        } else {
+            Ok(None)
+        }
+    };
+
+    let wants_embed_cover = matches!(fmt, AudioFormat::Flac | AudioFormat::Aac);
+    let cover_meta = task.metadata.clone();
+    let cover_temp_dir = temp_dir.clone();
+    let cover_tagger = tagger.clone();
+    let cover_fut = async move {
+        if wants_embed_cover {
+            cover_tagger
+                .fetch_cover_file(&cover_meta, &cover_temp_dir)
+                .await
+        } else {
+            Ok(None)
+        }
+    };
+
+    let (tr_res, lyrics_res, cover_res) = tokio::join!(tr_fut, lyrics_fut, cover_fut);
     let _ = std::fs::remove_file(&temp_file);
 
     let mut ok = true;
@@ -390,37 +447,37 @@ pub(super) async fn process_task(
     }
 
     let mut lyrics_synced: Option<String> = None;
-    if ok
-        && settings.fetch_lyrics
-        && matches!(
-            fmt,
-            AudioFormat::Mp3 | AudioFormat::Flac | AudioFormat::Aac | AudioFormat::Opus
-        )
-    {
-        match crate::core::lyrics::fetch_lyrics(&task.metadata, task.expected_duration_secs).await {
-            Ok(Some(lyrics)) => {
-                if lyrics.plain.is_some() || lyrics.synced.is_some() {
-                    logs.push(format!(
-                        "    {} {}",
-                        "🎵".magenta(),
-                        "Đã tải lời bài hát".green()
-                    ));
-                }
-                if lyrics.plain.is_some() {
-                    task.metadata.lyrics = lyrics.plain;
-                }
-                lyrics_synced = lyrics.synced;
+    match lyrics_res {
+        Ok(Some(lyrics)) => {
+            if lyrics.plain.is_some() || lyrics.synced.is_some() {
+                logs.push(format!(
+                    "    {} {}",
+                    "🎵".magenta(),
+                    "Đã tải lời bài hát".green()
+                ));
             }
-            Ok(None) => logs.push(format!(
-                "    {} {}",
-                "ℹ".yellow(),
-                "Không tìm thấy lời bài hát trên LRCLIB"
-            )),
-            Err(e) => logs.push(format!(
-                "    {} Lấy lời bài hát bỏ qua: {}",
-                "ℹ".yellow(),
-                e.to_string().replace(['\r', '\n'], " ").trim()
-            )),
+            if lyrics.plain.is_some() {
+                task.metadata.lyrics = lyrics.plain;
+            }
+            lyrics_synced = lyrics.synced;
+        }
+        Ok(None) => {
+            if want_lyrics {
+                logs.push(format!(
+                    "    {} {}",
+                    "ℹ".yellow(),
+                    "Không tìm thấy lời bài hát trên LRCLIB"
+                ));
+            }
+        }
+        Err(e) => {
+            if want_lyrics {
+                logs.push(format!(
+                    "    {} Lấy lời bài hát bỏ qua: {}",
+                    "ℹ".yellow(),
+                    e.to_string().replace(['\r', '\n'], " ").trim()
+                ));
+            }
         }
     }
 
@@ -439,49 +496,72 @@ pub(super) async fn process_task(
     }
 
     if ok && matches!(fmt, AudioFormat::Flac | AudioFormat::Aac) {
-        match tagger.fetch_cover_file(&task.metadata, &temp_dir).await {
-            Ok(Some(cover)) => {
-                let embed_input = final_path.clone();
-                let embed_cover = cover.clone();
-                let embed_ffmpeg = ffmpeg.clone();
-                let embed_res = tokio::task::spawn_blocking(move || {
-                    crate::core::transcoder::embed_cover_ffmpeg(
+        let cover_path: Option<PathBuf> = match cover_res {
+            Ok(Some(cover)) => Some(cover),
+            Ok(None) => None,
+            Err(e) => {
+                logs.push(format!("    {} Tải ảnh bìa thất bại: {}", "✖".red(), e));
+                None
+            }
+        };
+        let lyrics_text = task.metadata.lyrics.clone();
+        let has_cover = cover_path.is_some();
+        let has_lyrics = lyrics_text.is_some();
+        let embed_cover = cover_path.clone();
+        let embed_input = final_path.clone();
+        let embed_ffmpeg = ffmpeg.clone();
+        let embed_res = tokio::task::spawn_blocking(move || {
+            match (embed_cover.as_ref(), lyrics_text.as_deref()) {
+                (Some(cover), Some(lyrics)) => {
+                    crate::core::transcoder::embed_cover_and_lyrics_ffmpeg(
                         &embed_input,
-                        &embed_cover,
+                        cover,
+                        Some(lyrics),
                         &embed_ffmpeg,
                     )
-                })
-                .await
-                .unwrap_or_else(|error| Err(anyhow!("Tác vụ nhúng ảnh bìa bị ngắt: {error}")));
-                match embed_res {
-                    Ok(muxed) => match crate::utils::fs::replace_file(&muxed, &final_path) {
-                        Ok(()) => logs.push(format!(
-                            "    {} {}",
-                            "🖼".magenta(),
-                            "Nhúng ảnh bìa: Xong".green()
-                        )),
-                        Err(e) => logs.push(format!(
-                            "    {} Không thay thế tệp sau nhúng ảnh bìa: {}",
-                            "✖".red(),
-                            e
-                        )),
-                    },
-                    Err(e) => logs.push(format!("    {} Nhúng ảnh bìa thất bại: {}", "✖".red(), e)),
                 }
-                let _ = std::fs::remove_file(&cover);
+                (Some(cover), None) => {
+                    crate::core::transcoder::embed_cover_ffmpeg(&embed_input, cover, &embed_ffmpeg)
+                }
+                (None, Some(lyrics)) => {
+                    crate::core::transcoder::set_lyrics_ffmpeg(&embed_input, lyrics, &embed_ffmpeg)
+                }
+                (None, None) => Ok(embed_input.clone()),
             }
-            Ok(None) => {}
-            Err(e) => logs.push(format!("    {} Tải ảnh bìa thất bại: {}", "✖".red(), e)),
+        })
+        .await
+        .unwrap_or_else(|error| Err(anyhow!("Tác vụ nhúng bị ngắt: {error}")));
+        match embed_res {
+            Ok(muxed) if muxed != final_path => {
+                match crate::utils::fs::replace_file(&muxed, &final_path) {
+                    Ok(()) => {
+                        let label = match (has_cover, has_lyrics) {
+                            (true, true) => "Nhúng ảnh bìa & lời bài hát: Xong",
+                            (true, false) => "Nhúng ảnh bìa: Xong",
+                            _ => "Nhúng lời bài hát: Xong",
+                        };
+                        logs.push(format!("    {} {}", "🖼".magenta(), label.green()));
+                    }
+                    Err(e) => logs.push(format!(
+                        "    {} Không thay thế tệp sau khi nhúng: {}",
+                        "✖".red(),
+                        e
+                    )),
+                }
+            }
+            Ok(_) => {}
+            Err(e) => logs.push(format!(
+                "    {} Nhúng ảnh bìa/lời thất bại: {}",
+                "✖".red(),
+                e
+            )),
+        }
+        if let Some(cover) = cover_path {
+            let _ = std::fs::remove_file(&cover);
         }
     }
 
-    if ok
-        && task.metadata.lyrics.is_some()
-        && matches!(
-            fmt,
-            AudioFormat::Flac | AudioFormat::Aac | AudioFormat::Opus
-        )
-    {
+    if ok && task.metadata.lyrics.is_some() && fmt == AudioFormat::Opus {
         let embed_input = final_path.clone();
         let embed_lyrics = task.metadata.lyrics.clone().unwrap_or_default();
         let embed_ffmpeg = ffmpeg.clone();
@@ -538,6 +618,7 @@ pub(super) async fn process_task(
     handle.finish_and_clear();
     TaskOutcome {
         ok,
+        cancelled: false,
         logs,
         task,
         task_index: index,

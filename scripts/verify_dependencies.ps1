@@ -1,6 +1,6 @@
 param(
     [string]$YtDlpPath = "bin\yt-dlp.exe",
-    [string]$ManifestPath = "release\yt-dlp.json"
+    [string]$ManifestPath = "Release\yt-dlp.json"
 )
 
 $ErrorActionPreference = "Stop"

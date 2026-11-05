@@ -3,6 +3,7 @@ use std::sync::OnceLock;
 use std::time::Duration;
 
 static SHARED: OnceLock<reqwest::Client> = OnceLock::new();
+static DOWNLOAD: OnceLock<reqwest::Client> = OnceLock::new();
 
 const SHARED_USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
 
@@ -21,8 +22,22 @@ pub fn shared_client() -> Result<&'static reqwest::Client> {
         .ok_or_else(|| anyhow::anyhow!("Không thể khởi tạo HTTP client"))
 }
 
+pub fn download_client() -> Result<&'static reqwest::Client> {
+    if let Some(client) = DOWNLOAD.get() {
+        return Ok(client);
+    }
+    let client = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(10))
+        .user_agent(SHARED_USER_AGENT)
+        .build()?;
+    let _ = DOWNLOAD.set(client);
+    DOWNLOAD
+        .get()
+        .ok_or_else(|| anyhow::anyhow!("Không thể khởi tạo HTTP client tải xuống"))
+}
+
 pub fn is_retryable_status(status: reqwest::StatusCode) -> bool {
-    status == reqwest::StatusCode::TOO_MANY_REQUESTS
+    matches!(status.as_u16(), 408 | 429 | 500 | 502 | 503 | 504)
 }
 
 pub fn is_retryable_error(err: &anyhow::Error) -> bool {

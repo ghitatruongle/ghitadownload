@@ -459,7 +459,7 @@ pub async fn fetch_latest_ytdlp_version() -> Result<String> {
 mod tests {
     use super::{
         parse_github_latest_tag, version_is_newer, FFMPEG_FALLBACK_SHA256, FFMPEG_FALLBACK_URL,
-        YTDLP_FALLBACK_SHA256, YTDLP_PINNED_VERSION,
+        YTDLP_FALLBACK_SHA256, YTDLP_FALLBACK_URL, YTDLP_PINNED_VERSION,
     };
 
     #[test]
@@ -511,6 +511,7 @@ mod tests {
     #[test]
     fn pinned_constants_are_well_formed() {
         assert_eq!(YTDLP_PINNED_VERSION, "2026.10.26");
+        assert!(YTDLP_FALLBACK_URL.contains(YTDLP_PINNED_VERSION));
         assert_eq!(YTDLP_FALLBACK_SHA256.len(), 64);
         assert!(YTDLP_FALLBACK_SHA256.chars().all(|c| c.is_ascii_hexdigit()));
         assert_eq!(FFMPEG_FALLBACK_SHA256.len(), 64);

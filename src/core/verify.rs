@@ -74,11 +74,27 @@ pub fn has_media_signature(path: &Path) -> Result<()> {
     let mut head = [0_u8; 16];
     let mut file = std::fs::File::open(path)
         .map_err(|error| anyhow!("Không mở được tệp để kiểm tra định dạng: {}", error))?;
-    let n = {
+    let mut filled = 0usize;
+    loop {
         use std::io::Read;
-        file.read(&mut head)
-            .map_err(|error| anyhow!("Không đọc được tệp để kiểm tra định dạng: {}", error))?
-    };
+        match file.read(&mut head[filled..]) {
+            Ok(0) => break,
+            Ok(n) => {
+                filled += n;
+                if filled == head.len() {
+                    break;
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error) => {
+                return Err(anyhow!(
+                    "Không đọc được tệp để kiểm tra định dạng: {}",
+                    error
+                ))
+            }
+        }
+    }
+    let n = filled;
     if n < 12 {
         return Err(anyhow!(
             "Tệp quá nhỏ hoặc rỗng, không phải media hợp lệ ({} bytes)",
@@ -123,6 +139,7 @@ fn stream_flags(stderr: &str) -> (bool, bool) {
 pub async fn probe_media(
     path: &Path,
     ffmpeg: &Path,
+    audio_only: bool,
     mut cancel: tokio::sync::watch::Receiver<bool>,
 ) -> Result<MediaInfo> {
     let size_bytes = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
@@ -132,10 +149,11 @@ pub async fn probe_media(
     has_media_signature(path)?;
 
     let mut cmd = Command::new(ffmpeg);
-    cmd.arg("-hide_banner")
-        .arg("-i")
-        .arg(path)
-        .arg("-f")
+    cmd.arg("-hide_banner").arg("-i").arg(path);
+    if audio_only {
+        cmd.arg("-vn");
+    }
+    cmd.arg("-f")
         .arg("null")
         .arg("-")
         .stdin(std::process::Stdio::null())
@@ -164,7 +182,8 @@ pub async fn probe_media(
     };
     let stderr_buf = stderr_task.await.unwrap_or_default();
     let stderr = String::from_utf8_lossy(&stderr_buf);
-    if stderr.contains("Invalid data found")
+    let (has_audio, has_video) = stream_flags(&stderr);
+    if (!has_audio && !has_video)
         || stderr.contains("does not contain any stream")
         || stderr.contains("Output file is empty")
     {
@@ -174,15 +193,7 @@ pub async fn probe_media(
         ));
     }
 
-    let (has_audio, has_video) = stream_flags(&stderr);
-    if !has_audio && !has_video {
-        return Err(anyhow!(
-            "Tệp không chứa luồng âm thanh/video hợp lệ (thường do mã hóa DRM hoặc định dạng không hỗ trợ): {}",
-            path.display()
-        ));
-    }
-
-    if !status.success() && !(has_audio || has_video) {
+    if !status.success() && !DURATION_RE.is_match(&stderr) {
         return Err(anyhow!(
             "FFmpeg không thể đọc tệp {}: {}",
             path.display(),

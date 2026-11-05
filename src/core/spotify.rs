@@ -18,19 +18,25 @@ static OG_IMG_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r#"<meta property="og:image" content="([^"]+)""#).unwrap());
 
 fn artists_from_subtitle(subtitle: &str) -> Vec<String> {
-    let artist = subtitle
+    let primary = subtitle
         .split(" • ")
         .next()
         .unwrap_or(subtitle)
         .split(" · ")
         .next()
-        .unwrap_or(subtitle)
-        .trim();
+        .unwrap_or(subtitle);
 
-    if artist.is_empty() {
+    let artists: Vec<String> = primary
+        .split(',')
+        .map(str::trim)
+        .filter(|artist| !artist.is_empty())
+        .map(str::to_string)
+        .collect();
+
+    if artists.is_empty() {
         vec!["Unknown Artist".to_string()]
     } else {
-        vec![artist.to_string()]
+        artists
     }
 }
 
@@ -375,5 +381,26 @@ impl SpotifyClient {
             track_number: None,
             total_tracks: None,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::artists_from_subtitle;
+
+    #[test]
+    fn artists_from_subtitle_splits_comma_separated_artists() {
+        assert_eq!(
+            artists_from_subtitle("Artist One, Artist Two • Album • 2023"),
+            vec!["Artist One".to_string(), "Artist Two".to_string()]
+        );
+        assert_eq!(
+            artists_from_subtitle("Sơn Tùng M-TP · Đ climb"),
+            vec!["Sơn Tùng M-TP".to_string()]
+        );
+        assert_eq!(
+            artists_from_subtitle("   "),
+            vec!["Unknown Artist".to_string()]
+        );
     }
 }

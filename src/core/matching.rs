@@ -1,4 +1,6 @@
 const MIN_CANDIDATE_SCORE: f64 = 0.5;
+const MIN_TITLE_SIMILARITY: f64 = 0.3;
+const AUTHORITATIVE_BONUS: f64 = 0.05;
 
 const TITLE_WEIGHT: f64 = 0.5;
 const ARTIST_WEIGHT: f64 = 0.2;
@@ -73,6 +75,9 @@ fn score_candidate(
     expected_duration_secs: Option<u64>,
 ) -> f64 {
     let title_similarity = title_similarity(&candidate.title, expected_title, artists);
+    if title_similarity < MIN_TITLE_SIMILARITY {
+        return 0.0;
+    }
     let mut weighted = TITLE_WEIGHT * title_similarity;
     let mut total_weight = TITLE_WEIGHT;
 
@@ -93,7 +98,26 @@ fn score_candidate(
     if total_weight <= 0.0 {
         return 0.0;
     }
-    weighted / total_weight
+    let score = weighted / total_weight;
+    if is_authoritative_uploader(&candidate.uploader) {
+        (score + AUTHORITATIVE_BONUS).min(1.0)
+    } else {
+        score
+    }
+}
+
+fn is_authoritative_uploader(uploader: &str) -> bool {
+    let normalized = normalize_text(uploader);
+    normalized.ends_with("topic") || normalized.contains("vevo")
+}
+
+fn contains_token_sequence(haystack: &[String], needle: &[String]) -> bool {
+    if needle.is_empty() || haystack.len() < needle.len() {
+        return false;
+    }
+    haystack
+        .windows(needle.len())
+        .any(|window| window == needle)
 }
 
 fn title_similarity(candidate_title: &str, expected_title: &str, artists: &[&str]) -> f64 {
@@ -102,14 +126,16 @@ fn title_similarity(candidate_title: &str, expected_title: &str, artists: &[&str
         return 0.0;
     }
     let expected_joined = expected.join(" ");
-    let candidate_full = core_tokens(candidate_title, &[]).join(" ");
-    let candidate_without_artist = core_tokens(candidate_title, artists).join(" ");
+    let candidate_full_tokens = core_tokens(candidate_title, &[]);
+    let candidate_without_artist_tokens = core_tokens(candidate_title, artists);
+    let candidate_full = candidate_full_tokens.join(" ");
+    let candidate_without_artist = candidate_without_artist_tokens.join(" ");
     let full = dice_bigrams(&candidate_full, &expected_joined);
     let stripped = dice_bigrams(&candidate_without_artist, &expected_joined);
     let mut best = full.max(stripped);
     if expected_joined.chars().count() >= 4
-        && (candidate_full.contains(&expected_joined)
-            || candidate_without_artist.contains(&expected_joined))
+        && (contains_token_sequence(&candidate_full_tokens, &expected)
+            || contains_token_sequence(&candidate_without_artist_tokens, &expected))
     {
         best = best.max(0.9);
     }
@@ -140,9 +166,7 @@ fn artist_similarity(candidate_title: &str, uploader: &str, artists: &[&str]) ->
 
 fn duration_similarity(candidate_secs: Option<f64>, expected_secs: Option<u64>) -> Option<f64> {
     let expected = expected_secs? as f64;
-    let Some(candidate) = candidate_secs else {
-        return Some(0.5);
-    };
+    let candidate = candidate_secs?;
     let diff = (candidate - expected).abs();
     let score = if diff <= 2.0 {
         1.0
@@ -363,6 +387,42 @@ mod tests {
         )];
         let artists = vec!["Sơn Tùng M-TP".to_string()];
         assert!(pick_best(&candidates, "Hãy Trao Cho Anh", &artists, Some(235)).is_none());
+    }
+
+    #[test]
+    fn pick_best_rejects_zero_title_similarity_even_with_artist_and_duration() {
+        let candidates = vec![candidate(
+            "Totally Different Upload",
+            "Famous Artist",
+            Some(180.0),
+        )];
+        let artists = vec!["Famous Artist".to_string()];
+        assert!(
+            pick_best(&candidates, "Bài Hát Không Liên Quan", &artists, Some(180)).is_none(),
+            "perfect artist + duration must not rescue a zero-title candidate"
+        );
+    }
+
+    #[test]
+    fn pick_best_prefers_authoritative_topic_uploader_on_tie() {
+        let candidates = vec![
+            candidate("Song Name Official Audio", "Random Reupload", Some(180.0)),
+            candidate(
+                "Song Name Official Audio",
+                "Artist Name - Topic",
+                Some(181.0),
+            ),
+        ];
+        let artists = vec!["Artist Name".to_string()];
+        let best = pick_best(&candidates, "Song Name", &artists, Some(180)).unwrap();
+        assert_eq!(best.uploader, "Artist Name - Topic");
+    }
+
+    #[test]
+    fn title_similarity_boost_requires_word_boundaries() {
+        let artists: Vec<&str> = Vec::new();
+        assert!(title_similarity("Glove Box Official Audio", "Love", &artists) < 0.9);
+        assert!(title_similarity("Love Official Audio", "Love", &artists) >= 0.9);
     }
 
     #[test]

@@ -37,12 +37,12 @@ Ghita Download được thiết kế cho sự ổn định tuyệt đối: hỗ 
 
 ## Hướng Dẫn Cài Đặt & Thiết Lập (1-Click Installer)
 
-Ghita Download cung cấp **tệp cài đặt duy nhất nằm trong thư mục `Release/` (`Release/ghitadownload_0.0.5-beta.exe`)** tự động giải nén ứng dụng, nhúng sẵn công cụ phụ trợ, kiểm tra FFmpeg và cấu hình biến môi trường `PATH` để bạn có thể gọi từ bất kỳ thư mục nào trên máy tính.
+Ghita Download cung cấp **tệp cài đặt duy nhất nằm trong thư mục `Release/` (`Release/ghitadownload_0.0.5.exe`)** tự động giải nén ứng dụng, nhúng sẵn công cụ phụ trợ, kiểm tra FFmpeg và cấu hình biến môi trường `PATH` để bạn có thể gọi từ bất kỳ thư mục nào trên máy tính.
 
-Ghita Download `0.0.5-beta` là bản phát hành ổn định trên kênh phát hành chính thức: mỗi phiên bản được kiểm tra tự động (format, clippy, test suite, xác minh artifact) trước khi công bố.
+Ghita Download `0.0.5` là bản phát hành ổn định trên kênh phát hành chính thức: mỗi phiên bản được kiểm tra tự động (format, clippy, test suite, xác minh artifact) trước khi công bố.
 
 ### Cách 1: Cài đặt bằng tệp trong `Release/` (Khuyên dùng)
-1. Mở thư mục **`Release/`**, nhấp đúp chuột vào tệp **`ghitadownload_0.0.5-beta.exe`**.
+1. Mở thư mục **`Release/`**, nhấp đúp chuột vào tệp **`ghitadownload_0.0.5.exe`**.
 2. Chương trình sẽ hiển thị giao diện cài đặt tương tác:
    - Thư mục cài đặt mặc định: `%LOCALAPPDATA%\GhitaDownload`
    - Nhấn **[ENTER]** để xác nhận cài đặt ngay (hoặc dán đường dẫn thư mục tùy chỉnh nếu muốn).
@@ -66,7 +66,7 @@ Ghita Download `0.0.5-beta` là bản phát hành ổn định trên kênh phát
    ```powershell
    powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_release.ps1
    ```
-4. Chạy file `Release\ghitadownload_0.0.5-beta.exe` vừa tạo để cài đặt vào hệ thống.
+4. Chạy file `Release\ghitadownload_0.0.5.exe` vừa tạo để cài đặt vào hệ thống.
 
 ---
 
@@ -92,11 +92,11 @@ Sau khi đã cài đặt, bạn có thể tải nhạc và video trực tiếp v
    - `[1] 🚀 Bắt đầu nhập liên kết & Tải ngay`: Sử dụng cấu hình đang lưu, vào thẳng màn hình nhập link.
    - `[2] ⚙ Thay đổi cài đặt`: Tùy chỉnh thư mục lưu, định dạng (MP3/FLAC/AAC/WAV/Gốc/Video), chất lượng bitrate, độ phân giải video và tùy chọn giữ/khử dấu tiếng Việt.
    - `[3] 🔁 Thử lại các bài lỗi gần nhất`: Nạp `failed_tasks.json` trong thư mục lưu và tải lại đúng các bài đã lỗi.
-   - `[4] 📂 Mở thư mục lưu nhạc`: Mở nhanh thư mục tải trong Windows Explorer.
-   - `[5] 🔄 Cập nhật công cụ yt-dlp`: Tự động tải bản cập nhật mới nhất của yt-dlp từ GitHub Release.
+   - `[4] 🔄 Cập nhật công cụ yt-dlp`: Tự động tải bản cập nhật mới nhất của yt-dlp từ GitHub Release.
+   - `[5] 📂 Mở thư mục lưu nhạc`: Mở nhanh thư mục tải trong Windows Explorer.
    - `[6] ❌ Thoát`: Đóng ứng dụng.
 
-2. **Màn hình nhập đa liên kết:**
+2.  **Màn hình nhập đa liên kết:**
    - Gõ hoặc dán link 1 ➔ Nhấn **[↓ Mũi tên Xuống]** ➔ Xuất hiện `[Liên kết #2] > `
    - Tiếp tục gõ link 2 ➔ Nhấn **[↓]** ➔ `[Liên kết #3] > ` ...
    - Nhấn **[↑ Mũi tên Lên]** nếu muốn sửa lại link phía trên.
@@ -155,13 +155,13 @@ ghitadownload --resume --output "D:\Nhac"
 | `--keep-accents` | Giữ nguyên dấu tiếng Việt Unicode thay vì chuyển đổi sang tên tệp ASCII không dấu an toàn. |
 | `--concurrency <N>` | Số bài tải song song (mặc định 3). |
 | `--cookies <FILE>` | Tệp cookies định dạng Netscape forwarded cho yt-dlp, dùng cho nguồn yêu cầu đăng nhập. |
-| `--cookies-from-browser <BROWSER>` | Đọc cookies từ trình duyệt (`chrome`, `firefox`, `edge`, `brave`, `opera`, `safari`, `vivaldi`, `whale`...). |
+| `--cookies-from-browser <BROWSER>` | Đọc cookies từ trình duyệt (`chrome`, `chromium`, `firefox`, `edge`, `brave`, `opera`, `safari`, `vivaldi`, `whale`...). |
 | `--raw` | Chuyển thẳng mọi URL `http(s)` cho yt-dlp, bỏ qua parser nền tảng và kiểm chứng thời lượng (dùng cho trang chưa được hỗ trợ). Không áp dụng cho `--retry-failed`. |
 | `--retry-failed` | Đọc `failed_tasks.json` trong `--output` và tải lại các bài lỗi. |
 | `--resume` | Đọc `pending_tasks.json` trong `--output` và tải tiếp batch dở dang bị ngắt giữa chừng. |
 | `--no-lyrics` | Tắt tự động tải & nhúng lời bài hát (mặc định bật cho MP3/FLAC/AAC/Opus, kèm `.lrc` đồng bộ). |
 | `--check-ytdlp` (alias `--check-tools`) | So sánh yt-dlp đã pin với bản phát hành mới nhất trên GitHub, không tải gì. Chạy riêng; exit `0` khi đã mới nhất, `1` khi có bản mới, `2` khi lỗi mạng/API. |
-| `--update-ytdlp` (alias `--update-tools`) | Tải yt-dlp từ URL bất biến đã pin `2026.08.19`, kiểm tra SHA-256/PE/version rồi mới thay thế. Nguồn và hash khác phải được đặt qua `GHITA_YTDLP_SOURCE_URL` và `GHITA_YTDLP_SHA256`. |
+| `--update-ytdlp` (alias `--update-tools`) | Tải yt-dlp từ URL bất biến đã pin `2026.10.26`, kiểm tra SHA-256/PE/version rồi mới thay thế. Nguồn và hash khác phải được đặt qua `GHITA_YTDLP_SOURCE_URL` và `GHITA_YTDLP_SHA256`. |
 
 Headless không mở hộp thoại và không tự cài FFmpeg. Cần có `yt-dlp` và FFmpeg hợp lệ trước khi chạy; lỗi tham số, xung đột thao tác, định dạng/chất lượng không tương thích, độ phân giải ngoài `1080`, `720`, `480`, `best`, `--concurrency 0`, hoặc thiếu dependency đều trả mã thoát khác `0`. `--output` dùng thư mục đã lưu nếu không được chỉ định.
 
@@ -173,8 +173,8 @@ Khi không còn nhu cầu sử dụng, bạn có thể gỡ cài đặt sạch s
 - **Cách 1:** Mở thư mục cài đặt `%LOCALAPPDATA%\GhitaDownload` và nhấp đúp vào **`uninstall.bat`**.
 - **Cách 2:** Chạy lệnh từ terminal; trình cài đặt đọc thư mục tùy chỉnh đã lưu, hoặc truyền rõ đường dẫn:
   ```powershell
-  Release\ghitadownload_0.0.5-beta.exe --uninstall
-  Release\ghitadownload_0.0.5-beta.exe --uninstall --install-dir "D:\Apps\GhitaDownload"
+  Release\ghitadownload_0.0.5.exe --uninstall
+  Release\ghitadownload_0.0.5.exe --uninstall --install-dir "D:\Apps\GhitaDownload"
   ```
 Trình gỡ cài đặt chỉ xóa các tệp Ghita/yt-dlp/FFmpeg đã biết và thư mục rỗng; không dùng xóa đệ quy. PATH người dùng chỉ được ghi sau khi đọc thành công.
 
@@ -215,7 +215,7 @@ Chạy toàn bộ test suite để kiểm tra tính năng và tính toàn vẹn:
 cargo test --locked
 ```
 
-`build_installer.bat` chỉ phát hành từ artifact tạm đã vượt kiểm tra Windows PE, có bằng chứng version nhúng `0.0.5-beta`, có tên payload và không chứa placeholder `NO_EMBED`. Trước khi build, script xác minh `bin\\yt-dlp.exe` theo manifest `release/yt-dlp.json` và SHA-256. SHA-256 artifact được in ra khi xác minh; verifier kiểm tra bằng chứng nội tuyến, không phải chữ ký nhà phát hành. Artifact cũ trong `Release/` không bị thay thế nếu bước này thất bại.
+`build_installer.bat` chỉ phát hành từ artifact tạm đã vượt kiểm tra Windows PE, có bằng chứng version nhúng `0.0.5`, có tên payload và không chứa placeholder `NO_EMBED`. Trước khi build, script xác minh `bin\\yt-dlp.exe` theo manifest `release/yt-dlp.json` và SHA-256. SHA-256 artifact được in ra khi xác minh; verifier kiểm tra bằng chứng nội tuyến, không phải chữ ký nhà phát hành. Artifact cũ trong `Release/` không bị thay thế nếu bước này thất bại.
 
 Smoke test sống (tải thật một bài qua URL và một bài qua tìm kiếm, kiểm tra manifest, tự dọn thư mục tạm):
 ```powershell

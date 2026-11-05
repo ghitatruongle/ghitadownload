@@ -25,22 +25,7 @@ if ($bytes.Length -lt 1024 -or $bytes[0] -ne 0x4D -or $bytes[1] -ne 0x5A) {
 }
 
 $ascii = [Text.Encoding]::ASCII.GetString($bytes)
-$versionBytes = [Text.Encoding]::ASCII.GetBytes($version)
-$hasVersion = $false
-for ($index = 0; $index -le $bytes.Length - $versionBytes.Length; $index++) {
-    $matches = $true
-    for ($offset = 0; $offset -lt $versionBytes.Length; $offset++) {
-        if ($bytes[$index + $offset] -ne $versionBytes[$offset]) {
-            $matches = $false
-            break
-        }
-    }
-    if ($matches) {
-        $hasVersion = $true
-        break
-    }
-}
-if (!$hasVersion) {
+if (!$ascii.Contains($version)) {
     throw "Artifact does not embed the package version evidence: $version"
 }
 if ($ascii.Contains("NO_EMBED")) {
@@ -48,6 +33,17 @@ if ($ascii.Contains("NO_EMBED")) {
 }
 if (!$ascii.Contains("ghitadownload.exe") -or !$ascii.Contains("yt-dlp.exe")) {
     throw "Artifact lacks embedded payload name evidence"
+}
+$manifestPath = Join-Path "Release" "yt-dlp.json"
+if (Test-Path -LiteralPath $manifestPath -PathType Leaf) {
+    $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+    $pinnedVersion = $manifest.version
+    if ($pinnedVersion -and !$ascii.Contains($pinnedVersion)) {
+        throw "Artifact does not embed pinned yt-dlp version evidence: $pinnedVersion"
+    }
+}
+else {
+    Write-Host "Skipping pinned yt-dlp version check: $manifestPath not found"
 }
 
 $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $ArtifactPath).Hash

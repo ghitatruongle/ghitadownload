@@ -9,6 +9,20 @@ use std::time::{SystemTime, UNIX_EPOCH};
 const EMBEDDED_APP: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/embedded_app.bin"));
 const EMBEDDED_YTDLP: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/embedded_ytdlp.bin"));
 const INSTALL_DIR_FILE: &str = "install-dir.txt";
+const CONFIG_FILE: &str = "ghita_config.json";
+
+#[cfg(windows)]
+#[link(name = "kernel32")]
+unsafe extern "system" {
+    fn SetConsoleOutputCP(code_page: u32) -> i32;
+}
+
+fn enable_utf8_console() {
+    #[cfg(windows)]
+    unsafe {
+        SetConsoleOutputCP(65001);
+    }
+}
 
 #[derive(Debug, Default, PartialEq, Eq)]
 struct SetupArgs {
@@ -43,7 +57,13 @@ where
                 let raw = iterator
                     .next()
                     .ok_or_else(|| "--install-dir cần một đường dẫn".to_string())?;
-                let path = PathBuf::from(raw.as_ref());
+                let raw = raw.as_ref().to_string_lossy().into_owned();
+                if raw.starts_with('-') {
+                    return Err(format!(
+                        "--install-dir cần một đường dẫn, không nhận tham số: {raw}"
+                    ));
+                }
+                let path = PathBuf::from(raw);
                 if parsed.install_dir.replace(path).is_some() {
                     return Err("Không được lặp lại --install-dir".to_string());
                 }
@@ -65,6 +85,7 @@ where
 }
 
 fn main() {
+    enable_utf8_console();
     let args = match parse_args(std::env::args_os().skip(1)) {
         Ok(args) => args,
         Err(message) => {
@@ -134,6 +155,14 @@ fn install_state_path() -> Result<PathBuf, String> {
     let dir = dirs::data_local_dir()
         .ok_or_else(|| "Không xác định được LOCALAPPDATA để lưu đường dẫn cài đặt".to_string())?;
     Ok(dir.join("GhitaDownload").join(INSTALL_DIR_FILE))
+}
+
+fn state_dir() -> Option<PathBuf> {
+    dirs::data_local_dir().map(|dir| dir.join("GhitaDownload"))
+}
+
+fn global_config_path() -> Option<PathBuf> {
+    state_dir().map(|dir| dir.join(CONFIG_FILE))
 }
 
 fn persisted_install_dir() -> Option<PathBuf> {
@@ -214,8 +243,16 @@ fn handle_install(default_dir: &Path, args: &SetupArgs) -> Result<(), String> {
     let ytdlp_path = bin_dir.join("yt-dlp.exe");
     let uninstall_path = install_dir.join("uninstall.bat");
     let ffmpeg_path = bin_dir.join("ffmpeg.exe");
-    let state_path = install_state_path()?;
-    let staged_state = state_path.with_extension("txt.stage");
+    let state_path = match install_state_path() {
+        Ok(path) => Some(path),
+        Err(error) => {
+            println!("⚠️  Bỏ qua lưu đường dẫn cài đặt: {error}");
+            None
+        }
+    };
+    let staged_state = state_path
+        .as_ref()
+        .map(|path| path.with_extension("txt.stage"));
 
     println!("📦 Đang cài đặt tệp thực thi chính (ghitadownload.exe)...");
     if !EMBEDDED_APP.is_empty() && EMBEDDED_APP != b"NO_EMBED" {
@@ -235,12 +272,21 @@ fn handle_install(default_dir: &Path, args: &SetupArgs) -> Result<(), String> {
         return Err("Không tìm thấy tệp nhúng hoặc tệp yt-dlp.exe để cài đặt!".to_string());
     }
 
-    let persisted = install_dir.to_string_lossy().into_owned();
-    write_atomic(&staged_state, persisted.as_bytes())?;
     let uninstall = build_uninstall_script(&install_dir);
     write_atomic(&uninstall_path, uninstall.as_bytes())?;
-    ghita_download::utils::fs::replace_file(&staged_state, &state_path)
-        .map_err(|error| format!("Không lưu đường dẫn cài đặt: {error}"))?;
+    if let (Some(staged), Some(state)) = (staged_state, state_path) {
+        let persisted = install_dir.to_string_lossy().into_owned();
+        write_atomic(&staged, persisted.as_bytes())
+            .and_then(|()| {
+                ghita_download::utils::fs::replace_file(&staged, &state)
+                    .map_err(|error| format!("Không lưu đường dẫn cài đặt: {error}"))
+            })
+            .unwrap_or_else(|error| {
+                let _ = std::fs::remove_file(&staged);
+                println!("⚠️  Không lưu được đường dẫn cài đặt: {error}");
+                println!("   --uninstall sẽ dùng thư mục cài đặt mặc định.");
+            });
+    }
 
     println!("🔍 Đang kiểm tra công cụ chuyển mã FFmpeg...");
     let ffmpeg_exists = find_existing_tool(&ffmpeg_path)
@@ -305,7 +351,7 @@ fn find_existing_tool(path: &Path) -> Option<PathBuf> {
 fn build_uninstall_script(install_dir: &Path) -> String {
     let dir_literal = install_dir.to_string_lossy().replace('\'', "''");
     format!(
-        "@echo off\r\nsetlocal\r\npowershell -NoProfile -ExecutionPolicy Bypass -Command \"$dir=[IO.Path]::GetFullPath('{}'); $p=[Environment]::GetEnvironmentVariable('Path','User'); if ($null -eq $p) {{ exit 2 }}; $root=$dir.TrimEnd('\\'); $n=($p -split ';' | Where-Object {{ $cur=$_.Replace('/','\\'); $cur -and $cur.TrimEnd('\\') -ne $root -and $cur.TrimEnd('\\') -ne ($root + '\\bin').TrimEnd('\\') }}) -join ';'; [Environment]::SetEnvironmentVariable('Path',$n,'User')\"\r\nif errorlevel 1 exit /b 1\r\ndel /q \"%~dp0ghitadownload.exe\" 2>nul\r\ndel /q \"%~dp0ghita.exe\" 2>nul\r\ndel /q \"%~dp0uninstall.bat\" 2>nul\r\ndel /q \"%~dp0bin\\yt-dlp.exe\" 2>nul\r\ndel /q \"%~dp0bin\\ffmpeg.exe\" 2>nul\r\nrd \"%~dp0bin\" 2>nul\r\nrd \"%~dp0\" 2>nul\r\nif exist \"%~dp0\" exit /b 1\r\necho Da go bo Ghita khoi he thong thanh cong!\r\npause\r\n",
+        "@echo off\r\nsetlocal\r\npowershell -NoProfile -ExecutionPolicy Bypass -Command \"$dir=[IO.Path]::GetFullPath('{}'); $p=[Environment]::GetEnvironmentVariable('Path','User'); if ($null -eq $p) {{ exit 2 }}; $root=$dir.TrimEnd('\\'); $n=($p -split ';' | Where-Object {{ $cur=$_.Replace('/','\\'); $cur -and $cur.TrimEnd('\\') -ne $root -and $cur.TrimEnd('\\') -ne ($root + '\\bin').TrimEnd('\\') }}) -join ';'; [Environment]::SetEnvironmentVariable('Path',$n,'User')\"\r\nif errorlevel 1 exit /b 1\r\nfor %%F in (\"%~dp0ghita_config.json\" \"%LOCALAPPDATA%\\GhitaDownload\\ghita_config.json\") do if exist %%F del /q %%F 2>nul\r\ndel /q \"%~dp0ghitadownload.exe\" 2>nul\r\ndel /q \"%~dp0ghita.exe\" 2>nul\r\ndel /q \"%~dp0uninstall.bat\" 2>nul\r\ndel /q \"%~dp0bin\\yt-dlp.exe\" 2>nul\r\ndel /q \"%~dp0bin\\ffmpeg.exe\" 2>nul\r\nrd \"%~dp0bin\" 2>nul\r\nrd \"%~dp0\" 2>nul\r\nrd \"%LOCALAPPDATA%\\GhitaDownload\" 2>nul\r\nif exist \"%~dp0\" exit /b 1\r\necho Da go bo Ghita khoi he thong thanh cong!\r\npause\r\n",
         dir_literal
     )
 }
@@ -332,14 +378,42 @@ fn handle_uninstall(install_dir: &Path) -> Result<(), String> {
     remove_file_if_exists(&install_dir.join("bin").join("ffmpeg.exe"))?;
     remove_file_if_exists(&install_dir.join("bin").join("ffprobe.exe"))?;
     remove_dir_if_exists(&install_dir.join("bin"))?;
+    for name in uninstall_config_names(install_dir) {
+        remove_file_if_exists(&install_dir.join(name))?;
+    }
     remove_dir_if_exists(install_dir)?;
     if let Ok(state) = install_state_path() {
         if persisted_install_dir().as_deref() == Some(install_dir) {
             remove_file_if_exists(&state)?;
         }
     }
+    if let Some(global_config) = global_config_path() {
+        if let Some(state_dir) = state_dir() {
+            for name in uninstall_config_names(&state_dir) {
+                remove_file_if_exists(&global_config.with_file_name(name))?;
+            }
+            if state_dir == install_dir {
+                remove_dir_if_exists(&state_dir)?;
+            } else {
+                let _ = std::fs::remove_dir(&state_dir);
+            }
+        }
+    }
     println!("🎉 ĐÃ GỠ CÀI ĐẶT THÀNH CÔNG!");
     Ok(())
+}
+
+fn uninstall_config_names(dir: &Path) -> Vec<String> {
+    let mut names = vec![CONFIG_FILE.to_string()];
+    if let Ok(entries) = fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name.starts_with(&format!("{CONFIG_FILE}.")) {
+                names.push(name);
+            }
+        }
+    }
+    names
 }
 
 fn copy_required_file(source: &Path, destination: &Path) -> Result<(), String> {
@@ -385,17 +459,13 @@ fn trusted_candidates(file_name: &str) -> Vec<PathBuf> {
 fn find_local_app() -> Option<PathBuf> {
     trusted_candidates("ghitadownload.exe")
         .into_iter()
-        .chain([
-            PathBuf::from("target/release/ghitadownload.exe"),
-            PathBuf::from("target/debug/ghitadownload.exe"),
-        ])
-        .find(|path| path.is_absolute() && path.is_file())
+        .find(|path| path.is_file())
 }
 
 fn find_local_ytdlp() -> Option<PathBuf> {
     trusted_candidates("yt-dlp.exe")
         .into_iter()
-        .find(|path| path.is_absolute() && path.is_file())
+        .find(|path| path.is_file())
 }
 
 fn powershell_path() -> Result<PathBuf, String> {
@@ -454,16 +524,23 @@ fn set_user_path(value: &str) -> Result<(), String> {
     }
 }
 
+fn normalize_path_entry(entry: &str) -> String {
+    entry
+        .trim()
+        .trim_matches('"')
+        .replace('/', "\\")
+        .trim_end_matches('\\')
+        .to_ascii_lowercase()
+}
+
 fn add_to_user_path(dir: &Path) -> Result<bool, String> {
     let dir_str = dir.to_str().ok_or("Đường dẫn cài đặt không hợp lệ")?;
     let current = read_user_path()?.ok_or("Không đọc được PATH người dùng")?;
-    let parts: Vec<&str> = current.split(';').map(str::trim).collect();
-    if parts.iter().any(|part| {
-        part.eq_ignore_ascii_case(dir_str)
-            || part
-                .trim_end_matches('\\')
-                .eq_ignore_ascii_case(dir_str.trim_end_matches('\\'))
-    }) {
+    let target = normalize_path_entry(dir_str);
+    if current
+        .split(';')
+        .any(|part| normalize_path_entry(part) == target && !normalize_path_entry(part).is_empty())
+    {
         return Ok(false);
     }
     let updated = if current.trim().is_empty() {
@@ -479,16 +556,11 @@ fn remove_from_user_path(dir: &Path) -> Result<(), String> {
     let dir_str = dir.to_str().ok_or("Đường dẫn cài đặt không hợp lệ")?;
     let current =
         read_user_path()?.ok_or("Không đọc được PATH người dùng; PATH không được ghi đè")?;
+    let target = normalize_path_entry(dir_str);
     let updated = current
         .split(';')
         .map(str::trim)
-        .filter(|part| {
-            !part.is_empty()
-                && !part.eq_ignore_ascii_case(dir_str)
-                && !part
-                    .trim_end_matches('\\')
-                    .eq_ignore_ascii_case(dir_str.trim_end_matches('\\'))
-        })
+        .filter(|part| !part.is_empty() && normalize_path_entry(part) != target)
         .collect::<Vec<_>>()
         .join(";");
     if updated != current {
@@ -499,7 +571,10 @@ fn remove_from_user_path(dir: &Path) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{build_uninstall_script, parse_args, validate_install_dir, write_atomic};
+    use super::{
+        build_uninstall_script, normalize_path_entry, parse_args, uninstall_config_names,
+        validate_install_dir, write_atomic,
+    };
     use std::path::{Path, PathBuf};
 
     #[test]
@@ -514,6 +589,13 @@ mod tests {
         assert!(parse_args(["--unknown"]).is_err());
         assert!(parse_args(["--silent", "--silent"]).is_err());
         assert!(parse_args(["positional"]).is_err());
+    }
+
+    #[test]
+    fn install_dir_flag_does_not_swallow_next_flag() {
+        assert!(parse_args(["--install-dir", "--silent"]).is_err());
+        assert!(parse_args(["--install-dir", "-s"]).is_err());
+        assert!(parse_args(["--install-dir", "--uninstall"]).is_err());
     }
 
     #[test]
@@ -554,5 +636,41 @@ mod tests {
         let script = build_uninstall_script(Path::new("C:/Apps/Ghita"));
         assert!(script.contains("[IO.Path]::GetFullPath('C:/Apps/Ghita')"));
         assert!(script.contains(".Replace('/','\\')"));
+    }
+
+    #[test]
+    fn uninstall_script_cleans_config_and_state_dir() {
+        let script = build_uninstall_script(Path::new(r"C:\Apps\Ghita"));
+        assert!(script.contains("ghita_config.json"));
+        assert!(script.contains("rd \"%LOCALAPPDATA%\\GhitaDownload\" 2>nul"));
+    }
+
+    #[test]
+    fn path_entries_normalize_case_slashes_and_quotes() {
+        assert_eq!(
+            normalize_path_entry(r#"  "C:/Apps/Ghita/"  "#),
+            r"c:\apps\ghita".to_string()
+        );
+        assert_eq!(
+            normalize_path_entry(r"C:\Apps\Ghita"),
+            r"c:\apps\ghita".to_string()
+        );
+    }
+
+    #[test]
+    fn uninstall_config_names_includes_corrupt_backups() {
+        let dir = std::env::temp_dir().join(format!("ghita_setup_config_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("ghita_config.json"), b"{}").unwrap();
+        std::fs::write(dir.join("ghita_config.json.corrupt-123"), b"bad").unwrap();
+        std::fs::write(dir.join("other.json"), b"keep").unwrap();
+        let names = uninstall_config_names(&dir);
+        assert!(names.iter().any(|name| name == "ghita_config.json"));
+        assert!(names
+            .iter()
+            .any(|name| name == "ghita_config.json.corrupt-123"));
+        assert!(!names.iter().any(|name| name == "other.json"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -30,17 +30,20 @@ pub fn write_manifest(
         year, month, day, hour, minute, second
     );
 
+    let failed_keys: std::collections::HashSet<(&str, &str)> = failed
+        .iter()
+        .map(|f| (f.display_title.as_str(), f.source_or_search.as_str()))
+        .collect();
+    let note_map: std::collections::HashMap<usize, Option<String>> =
+        source_notes.iter().cloned().collect();
+
     let results: Vec<serde_json::Value> = tasks
         .iter()
         .enumerate()
         .map(|(index, task)| {
-            let failed_hit = failed.iter().any(|f| {
-                f.display_title == task.display_title && f.source_or_search == task.source_or_search
-            });
-            let note = source_notes
-                .iter()
-                .find(|(task_index, _)| *task_index == index)
-                .and_then(|(_, note)| note.clone());
+            let failed_hit = failed_keys
+                .contains(&(task.display_title.as_str(), task.source_or_search.as_str()));
+            let note = note_map.get(&index).cloned().unwrap_or(None);
             let mut entry = json!({
                 "url": task.source_or_search,
                 "status": if failed_hit { "failed" } else { "ok" },

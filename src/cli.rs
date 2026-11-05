@@ -483,15 +483,20 @@ impl CliApp {
     }
 
     fn print_banner() {
-        println!(
-            "{}",
-            "╔══════════════════════════════════════════════════════════════╗".cyan()
-        );
+        const WIDTH: usize = 62;
+        let title = format!("GHITA DOWNLOADER ({})", APP_VERSION);
+        let title_width = title.chars().count();
+        let remaining = WIDTH.saturating_sub(title_width).saturating_sub(4);
+        let left = remaining / 2;
+        let right = remaining - left;
+        println!("{}", format!("╔{}╗", "═".repeat(WIDTH)).cyan());
         println!(
             "{}",
             format!(
-                "║                 GHITA DOWNLOADER ({:<10})              ║",
-                APP_VERSION
+                "║{}{}{}║",
+                " ".repeat(left + 2),
+                title,
+                " ".repeat(right + 2)
             )
             .cyan()
             .bold()
@@ -504,10 +509,7 @@ impl CliApp {
             "{}",
             "║  TikTok, FB, Reels, X | MP3/WAV/FLAC/AAC/Video | Song song   ║".bright_white()
         );
-        println!(
-            "{}",
-            "╚══════════════════════════════════════════════════════════════╝".cyan()
-        );
+        println!("{}", format!("╚{}╝", "═".repeat(WIDTH)).cyan());
         println!();
     }
 }
