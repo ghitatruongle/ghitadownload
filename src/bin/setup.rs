@@ -570,6 +570,7 @@ where
     Err(last_error.unwrap_or_else(|| "Không cập nhật được PATH người dùng".to_string()))
 }
 
+#[cfg(windows)]
 fn normalize_path_entry(entry: &str) -> String {
     entry
         .trim()
@@ -579,6 +580,7 @@ fn normalize_path_entry(entry: &str) -> String {
         .to_ascii_lowercase()
 }
 
+#[cfg(windows)]
 fn path_entry_present(current: &str, dir_str: &str) -> bool {
     let target = normalize_path_entry(dir_str);
     current.split(';').any(|part| {
@@ -587,6 +589,7 @@ fn path_entry_present(current: &str, dir_str: &str) -> bool {
     })
 }
 
+#[cfg(windows)]
 fn append_path_entry(current: &str, dir_str: &str) -> String {
     if current.trim().is_empty() {
         dir_str.to_string()
@@ -595,6 +598,7 @@ fn append_path_entry(current: &str, dir_str: &str) -> String {
     }
 }
 
+#[cfg(windows)]
 fn remove_path_entry(current: &str, dir_str: &str) -> Option<String> {
     let target = normalize_path_entry(dir_str);
     let updated = current
@@ -624,7 +628,7 @@ fn remove_from_user_path(dir: &Path) -> Result<(), String> {
     update_user_path(|current| remove_path_entry(current, dir_str)).map(|_| ())
 }
 
-#[cfg(test)]
+#[cfg(all(test, windows))]
 mod tests {
     use super::{
         append_path_entry, build_uninstall_script, normalize_path_entry, parse_args,
