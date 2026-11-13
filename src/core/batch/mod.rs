@@ -33,6 +33,8 @@ pub struct FailedQueue {
 pub struct BatchOutcome {
     pub success_count: usize,
     pub failed_tasks: Vec<DownloadTask>,
+    pub elapsed_secs: f64,
+    pub total_bytes: u64,
 }
 
 struct TaskOutcome {
@@ -42,6 +44,7 @@ struct TaskOutcome {
     task: DownloadTask,
     task_index: usize,
     source_note: Option<String>,
+    produced_bytes: u64,
 }
 
 pub struct BatchProcessor {
@@ -111,4 +114,53 @@ pub fn write_pending_state(
 
 pub fn clear_pending_state(output_dir: &Path) {
     let _ = std::fs::remove_file(output_dir.join(PENDING_QUEUE_FILE));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{BatchOutcome, DownloadTask, TaskOutcome};
+
+    #[test]
+    fn batch_outcome_carries_summary_fields() {
+        let outcome = BatchOutcome {
+            success_count: 2,
+            failed_tasks: Vec::new(),
+            elapsed_secs: 1.5,
+            total_bytes: 2048,
+        };
+        assert_eq!(outcome.success_count, 2);
+        assert_eq!(outcome.elapsed_secs, 1.5);
+        assert_eq!(outcome.total_bytes, 2048);
+        assert!(outcome.failed_tasks.is_empty());
+    }
+
+    #[test]
+    fn task_outcome_defaults_produced_bytes_field() {
+        let outcome = TaskOutcome {
+            ok: true,
+            cancelled: false,
+            logs: Vec::new(),
+            task: DownloadTask {
+                display_title: "t".to_string(),
+                source_or_search: String::new(),
+                fallback_searches: Vec::new(),
+                expected_duration_secs: None,
+                metadata: crate::core::tagger::AudioMetadata {
+                    title: "t".to_string(),
+                    artists: Vec::new(),
+                    album: String::new(),
+                    release_year: None,
+                    cover_url: None,
+                    track_number: None,
+                    total_tracks: None,
+                    lyrics: None,
+                },
+            },
+            task_index: 0,
+            source_note: None,
+            produced_bytes: 42,
+        };
+        assert_eq!(outcome.produced_bytes, 42);
+        assert!(outcome.ok);
+    }
 }

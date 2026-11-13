@@ -1,6 +1,5 @@
 use anyhow::{anyhow, Result};
 use serde_json::Value;
-use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -111,6 +110,7 @@ impl<'a> YouTubeClient<'a> {
         args.extend(YTDLP_DEFAULT_ARGS.iter().map(|s| s.to_string()));
         self.append_cookie_args(&mut args);
         args.push("--dump-single-json".to_string());
+        args.push("--".to_string());
         args.push(url_or_query.to_string());
         cmd.args(&args);
         cmd
@@ -145,6 +145,30 @@ impl<'a> YouTubeClient<'a> {
     }
 
     pub fn extract_playlist_items(&self, playlist_url: &str) -> Result<Vec<YouTubeTrackMeta>> {
+        let output = self
+            .build_flat_playlist_command(playlist_url)
+            .output()
+            .map_err(|error| anyhow!("Không thể chạy yt-dlp: {error}"))?;
+        if !output.status.success() {
+            let err = String::from_utf8_lossy(&output.stderr);
+            return Err(anyhow!(
+                "Lỗi khi lấy danh sách Playlist YouTube: {}",
+                err.trim()
+            ));
+        }
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let items: Vec<YouTubeTrackMeta> = stdout
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .filter_map(Self::parse_flat_playlist_line)
+            .collect();
+        if items.is_empty() {
+            return Err(anyhow!("Playlist YouTube không có track"));
+        }
+        Ok(items)
+    }
+
+    fn build_flat_playlist_command(&self, playlist_url: &str) -> Command {
         let mut cmd = Command::new(self.ytdlp_path);
         let mut args: Vec<String> = Vec::new();
         if self.has_node {
@@ -161,117 +185,50 @@ impl<'a> YouTubeClient<'a> {
             "%(id)s\t%(title)s\t%(uploader)s\t%(duration)s\t%(thumbnail)s\t%(webpage_url)s"
                 .to_string(),
         );
+        args.push("--".to_string());
         args.push(playlist_url.to_string());
         cmd.args(&args);
         cmd.stdin(Stdio::null());
-        cmd.stdout(Stdio::piped());
-        cmd.stderr(Stdio::piped());
-        let mut child = cmd
-            .spawn()
-            .map_err(|error| anyhow!("Không thể chạy yt-dlp: {error}"))?;
-        let stderr_thread = child.stderr.take().map(|stderr| {
-            std::thread::spawn(move || {
-                let mut reader = BufReader::new(stderr);
-                let mut text = String::new();
-                let mut buf = vec![0u8; 8192];
-                loop {
-                    match reader.read(&mut buf) {
-                        Ok(0) => break,
-                        Ok(n) => {
-                            text.push_str(&String::from_utf8_lossy(&buf[..n]));
-                            if text.len() > 65536 {
-                                text = text[text.len().saturating_sub(32768)..].to_string();
-                            }
-                        }
-                        Err(_) => break,
-                    }
-                }
-                text
-            })
-        });
-        let stdout_thread = child.stdout.take().map(|stdout| {
-            std::thread::spawn(move || {
-                let reader = BufReader::new(stdout);
-                let mut out = Vec::new();
-                for line in reader.lines() {
-                    match line {
-                        Ok(line) => {
-                            if !line.trim().is_empty() {
-                                out.push(line);
-                            }
-                        }
-                        Err(_) => break,
-                    }
-                }
-                out
-            })
-        });
-        let status = child
-            .wait()
-            .map_err(|error| anyhow!("Không thể đọc trạng thái yt-dlp: {error}"))?;
-        let stderr_out = stderr_thread
-            .map(|handle| handle.join().unwrap_or_default())
-            .unwrap_or_default();
-        let raw_lines = stdout_thread
-            .map(|handle| handle.join().unwrap_or_default())
-            .unwrap_or_default();
-        if !status.success() {
-            let tail: String = stderr_out
-                .chars()
-                .rev()
-                .take(4096)
-                .collect::<String>()
-                .chars()
-                .rev()
-                .collect();
-            return Err(anyhow!(
-                "Lỗi khi lấy danh sách Playlist YouTube: {}",
-                tail.trim()
-            ));
+        cmd
+    }
+
+    fn parse_flat_playlist_line(line: &str) -> Option<YouTubeTrackMeta> {
+        let mut parts = line.split('\t');
+        let id = parts.next().unwrap_or("").trim().to_string();
+        let title = parts.next().unwrap_or("").trim().to_string();
+        let uploader = parts.next().unwrap_or("").trim().to_string();
+        let duration_raw = parts.next().unwrap_or("").trim().to_string();
+        let thumbnail_raw = parts.next().unwrap_or("").trim().to_string();
+        let webpage_raw = parts.next().unwrap_or("").trim().to_string();
+        if id.is_empty() || id == "NA" || title.is_empty() || title == "NA" {
+            return None;
         }
-        let mut items: Vec<YouTubeTrackMeta> = Vec::new();
-        for line in raw_lines {
-            let mut parts = line.split('\t');
-            let id = parts.next().unwrap_or("").trim().to_string();
-            let title = parts.next().unwrap_or("").trim().to_string();
-            let uploader = parts.next().unwrap_or("").trim().to_string();
-            let duration_raw = parts.next().unwrap_or("").trim().to_string();
-            let thumbnail_raw = parts.next().unwrap_or("").trim().to_string();
-            let webpage_raw = parts.next().unwrap_or("").trim().to_string();
-            if id.is_empty() || id == "NA" || title.is_empty() || title == "NA" {
-                continue;
-            }
-            let duration_secs = duration_raw
-                .parse::<f64>()
-                .ok()
-                .filter(|duration| *duration > 0.0);
-            let thumbnail_url = if thumbnail_raw.is_empty() || thumbnail_raw == "NA" {
-                None
-            } else {
-                Some(thumbnail_raw)
-            };
-            let direct_url = if webpage_raw.is_empty() || webpage_raw == "NA" {
-                format!("https://www.youtube.com/watch?v={}", id)
-            } else {
-                webpage_raw
-            };
-            let uploader = if uploader.is_empty() || uploader == "NA" {
-                "YouTube".to_string()
-            } else {
-                uploader
-            };
-            items.push(YouTubeTrackMeta {
-                id,
-                title,
-                uploader,
-                thumbnail_url,
-                duration_secs,
-                direct_url,
-            });
-        }
-        if items.is_empty() {
-            return Err(anyhow!("Playlist YouTube không có track"));
-        }
-        Ok(items)
+        let duration_secs = duration_raw
+            .parse::<f64>()
+            .ok()
+            .filter(|duration| *duration > 0.0);
+        let thumbnail_url = if thumbnail_raw.is_empty() || thumbnail_raw == "NA" {
+            None
+        } else {
+            Some(thumbnail_raw)
+        };
+        let direct_url = if webpage_raw.is_empty() || webpage_raw == "NA" {
+            format!("https://www.youtube.com/watch?v={}", id)
+        } else {
+            webpage_raw
+        };
+        let uploader = if uploader.is_empty() || uploader == "NA" {
+            "YouTube".to_string()
+        } else {
+            uploader
+        };
+        Some(YouTubeTrackMeta {
+            id,
+            title,
+            uploader,
+            thumbnail_url,
+            duration_secs,
+            direct_url,
+        })
     }
 }

@@ -47,21 +47,14 @@ impl MultiLinkInput {
     }
 
     fn get_clipboard_text() -> Option<String> {
-        #[cfg(windows)]
-        {
-            let output = std::process::Command::new("powershell")
-                .args(["-NoProfile", "-Command", "Get-Clipboard"])
-                .output()
-                .ok()?;
-            if output.status.success() {
-                let text = String::from_utf8_lossy(&output.stdout).to_string();
-                let trimmed = text.trim();
-                if !trimmed.is_empty() {
-                    return Some(trimmed.to_string());
-                }
-            }
+        let mut clipboard = arboard::Clipboard::new().ok()?;
+        let text = clipboard.get_text().ok()?;
+        let trimmed = text.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
         }
-        None
     }
 
     fn looks_like_link(token: &str) -> bool {

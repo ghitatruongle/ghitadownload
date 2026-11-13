@@ -227,23 +227,19 @@ fn settings_json_without_cookie_keys_still_deserializes() {
 }
 
 #[test]
-fn settings_json_with_cookie_keys_roundtrips() {
+fn settings_json_with_cookie_keys_skips_cookies_on_serialize() {
     let json = r#"{"output_dir":"out","format":"Mp3","quality":null,"concurrency":3,"cookies_file":"cookies.txt","cookies_from_browser":"edge"}"#;
     let settings: ghita_download::core::config::DownloadSettings =
         serde_json::from_str(json).unwrap();
-    assert_eq!(
-        settings.cookies_file.as_deref(),
-        Some(std::path::Path::new("cookies.txt"))
-    );
-    assert_eq!(settings.cookies_from_browser.as_deref(), Some("edge"));
+    assert!(settings.cookies_file.is_none());
+    assert!(settings.cookies_from_browser.is_none());
     let serialized = serde_json::to_string(&settings).unwrap();
+    assert!(!serialized.contains("cookies_file"));
+    assert!(!serialized.contains("cookies_from_browser"));
     let again: ghita_download::core::config::DownloadSettings =
         serde_json::from_str(&serialized).unwrap();
-    assert_eq!(
-        again.cookies_file.as_deref(),
-        Some(std::path::Path::new("cookies.txt"))
-    );
-    assert_eq!(again.cookies_from_browser.as_deref(), Some("edge"));
+    assert!(again.cookies_file.is_none());
+    assert!(again.cookies_from_browser.is_none());
 }
 
 #[test]

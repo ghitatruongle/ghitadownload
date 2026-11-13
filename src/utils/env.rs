@@ -69,6 +69,7 @@ fn command_file_name(command: &str) -> &str {
         match command {
             "yt-dlp" => "yt-dlp.exe",
             "ffmpeg" => "ffmpeg.exe",
+            "ffprobe" => "ffprobe.exe",
             "node" => "node.exe",
             "winget" => "winget.exe",
             "powershell" => "powershell.exe",
@@ -133,6 +134,21 @@ pub fn find_ffmpeg() -> Option<PathBuf> {
             ]
             .iter()
             .find_map(|candidate| validate_tool(candidate, "FFmpeg").ok())
+        })
+}
+
+pub fn find_ffprobe() -> Option<PathBuf> {
+    tool_candidates("ffprobe.exe")
+        .iter()
+        .find_map(|candidate| validate_tool(candidate, "ffprobe").ok())
+        .or_else(|| find_command("ffprobe"))
+        .or_else(|| {
+            [
+                PathBuf::from(r"C:\ffmpeg\bin\ffprobe.exe"),
+                PathBuf::from(r"C:\Program Files\ffmpeg\bin\ffprobe.exe"),
+            ]
+            .iter()
+            .find_map(|candidate| validate_tool(candidate, "ffprobe").ok())
         })
 }
 
@@ -278,7 +294,7 @@ fn configured_url(
         .unwrap_or_else(|| fallback.to_string())
 }
 
-pub fn install_ffmpeg_auto() -> Result<PathBuf> {
+pub async fn install_ffmpeg_auto() -> Result<PathBuf> {
     if let Some(path) = find_ffmpeg() {
         return Ok(path);
     }
@@ -294,60 +310,156 @@ pub fn install_ffmpeg_auto() -> Result<PathBuf> {
                 .join("bin")
         });
     let target_dir = strip_verbatim_prefix(&target_dir);
-    let target = target_dir.join("ffmpeg.exe");
-    let zip =
-        strip_verbatim_prefix(&unique_path(&target_dir, "ffmpeg", "ffmpeg")?.with_extension("zip"));
-    let extracted = strip_verbatim_prefix(&unique_path(&target_dir, "ffmpeg", "ffmpeg-extract")?);
-    let downloaded = strip_verbatim_prefix(
-        &unique_path(&target_dir, "ffmpeg", "ffmpeg-bin")?.with_extension("exe"),
-    );
-    let url = std::env::var("GHITA_FFMPEG_SOURCE_URL")
+    let override_url = std::env::var("GHITA_FFMPEG_SOURCE_URL")
         .ok()
-        .filter(|value| value.starts_with("https://"))
-        .unwrap_or_else(|| FFMPEG_FALLBACK_URL.to_string());
-    let expected_sha256 = std::env::var("GHITA_FFMPEG_SHA256")
+        .filter(|value| value.starts_with("https://"));
+    let override_sha256 = std::env::var("GHITA_FFMPEG_SHA256")
         .ok()
-        .filter(|value| value.len() == 64)
-        .unwrap_or_else(|| FFMPEG_FALLBACK_SHA256.to_string());
-    let result = (|| -> Result<PathBuf> {
-        download_file(&url, &zip)?;
-        verify_sha256(&zip, &expected_sha256)?;
-        if std::fs::metadata(&zip).is_ok_and(|metadata| metadata.len() <= 100) {
-            bail!("Tệp FFmpeg tải về quá nhỏ hoặc không hợp lệ");
-        }
-        let powershell = powershell_path()?;
-        let expand_script = format!(
-            "$ErrorActionPreference='Stop'; Expand-Archive -LiteralPath {} -DestinationPath {} -Force; $bin = Get-ChildItem -LiteralPath {} -Recurse -Filter 'ffmpeg.exe' | Select-Object -First 1; if ($null -eq $bin) {{ throw 'ffmpeg.exe not found in archive' }}; Copy-Item -LiteralPath $bin.FullName -Destination {} -Force",
-            ps_quote(&zip.to_string_lossy()),
-            ps_quote(&extracted.to_string_lossy()),
-            ps_quote(&extracted.to_string_lossy()),
-            ps_quote(&downloaded.to_string_lossy())
+        .filter(|value| value.len() == 64);
+    if override_url.is_some() || override_sha256.is_some() {
+        println!(
+            "⚠️ Đang dùng nguồn FFmpeg ghi đè qua biến môi trường (GHITA_FFMPEG_SOURCE_URL / GHITA_FFMPEG_SHA256). Hãy đảm bảo bạn tin tưởng nguồn này!"
         );
-        let output = Command::new(powershell)
-            .args(["-NoProfile", "-NonInteractive", "-Command", &expand_script])
-            .output()
-            .context("Không thể giải nén gói FFmpeg")?;
-        if !output.status.success() {
-            bail!(
-                "Giải nén FFmpeg thất bại{}{}",
-                output.status,
-                process_error(&output)
-            );
-        }
-        validate_tool(&downloaded, "FFmpeg")?;
-        tool_version(&downloaded)?;
-        crate::utils::fs::replace_file(&downloaded, &target)
-            .with_context(|| format!("Không thể cài {}", target.display()))?;
-        Ok(target)
-    })();
-    let _ = std::fs::remove_file(&zip);
-    let _ = std::fs::remove_file(&downloaded);
-    if extracted.exists() {
-        let _ = std::fs::remove_dir_all(&extracted);
     }
-    let path = result?;
-    tool_version(&path)?;
-    Ok(path)
+    let url = override_url.unwrap_or_else(|| FFMPEG_FALLBACK_URL.to_string());
+    let expected_sha256 = override_sha256.unwrap_or_else(|| FFMPEG_FALLBACK_SHA256.to_string());
+    let temp_zip = strip_verbatim_prefix(
+        &unique_path(&std::env::temp_dir(), "ffmpeg", "ffmpeg")?.with_extension("zip"),
+    );
+    let result = download_and_install_ffmpeg(&url, &expected_sha256, &target_dir, &temp_zip).await;
+    let _ = std::fs::remove_file(&temp_zip);
+    let target = result?;
+    tool_version(&target)?;
+    Ok(target)
+}
+
+async fn download_and_install_ffmpeg(
+    url: &str,
+    expected_sha256: &str,
+    target_dir: &Path,
+    temp_zip: &Path,
+) -> Result<PathBuf> {
+    let client = crate::utils::http::download_client()?;
+    let mut response = crate::utils::http::with_retry(|| async {
+        let response = client.get(url).send().await?.error_for_status()?;
+        Ok(response)
+    })
+    .await
+    .with_context(|| format!("Không thể tải FFmpeg từ {url}"))?;
+    use tokio::io::AsyncWriteExt;
+    let mut file = tokio::fs::File::create(temp_zip)
+        .await
+        .with_context(|| format!("Không thể tạo tệp tạm: {}", temp_zip.display()))?;
+    let mut pending: Vec<u8> = Vec::with_capacity(64 * 1024);
+    while let Some(chunk) = response.chunk().await? {
+        pending.extend_from_slice(&chunk);
+        if pending.len() >= 64 * 1024 {
+            file.write_all(&pending).await?;
+            pending.clear();
+        }
+    }
+    if !pending.is_empty() {
+        file.write_all(&pending).await?;
+    }
+    file.flush().await?;
+    drop(file);
+    if std::fs::metadata(temp_zip).is_ok_and(|metadata| metadata.len() <= 100) {
+        bail!("Tệp FFmpeg tải về quá nhỏ hoặc không hợp lệ");
+    }
+    verify_zip_sha256(temp_zip, expected_sha256)?;
+    std::fs::create_dir_all(target_dir)
+        .with_context(|| format!("Không thể tạo thư mục cài FFmpeg: {}", target_dir.display()))?;
+    let ffmpeg_target = target_dir.join("ffmpeg.exe");
+    let ffprobe_target = target_dir.join("ffprobe.exe");
+    extract_ffmpeg_binaries(temp_zip, &ffmpeg_target, &ffprobe_target).await?;
+    validate_tool(&ffmpeg_target, "FFmpeg")?;
+    validate_tool(&ffprobe_target, "ffprobe")?;
+    tool_version(&ffmpeg_target)?;
+    tool_version(&ffprobe_target)?;
+    Ok(ffmpeg_target)
+}
+
+async fn extract_ffmpeg_binaries(
+    zip_path: &Path,
+    ffmpeg_target: &Path,
+    ffprobe_target: &Path,
+) -> Result<()> {
+    let zip_path = zip_path.to_path_buf();
+    let ffmpeg_target = ffmpeg_target.to_path_buf();
+    let ffprobe_target = ffprobe_target.to_path_buf();
+    tokio::task::spawn_blocking(move || -> Result<()> {
+        let zip_file = std::fs::File::open(&zip_path)
+            .with_context(|| format!("Không thể mở tệp zip FFmpeg: {}", zip_path.display()))?;
+        let mut archive = zip::ZipArchive::new(zip_file)
+            .with_context(|| "Không thể đọc cấu trúc tệp zip FFmpeg")?;
+        let mut found_ffmpeg = false;
+        let mut found_ffprobe = false;
+        for index in 0..archive.len() {
+            let mut entry = archive
+                .by_index(index)
+                .with_context(|| format!("Không thể đọc mục {index} trong zip FFmpeg"))?;
+            if entry.is_dir() {
+                continue;
+            }
+            let entry_name = Path::new(entry.name())
+                .file_name()
+                .map(|name| name.to_string_lossy().to_ascii_lowercase())
+                .unwrap_or_default();
+            let destination = match entry_name.as_str() {
+                "ffmpeg.exe" => {
+                    found_ffmpeg = true;
+                    ffmpeg_target.clone()
+                }
+                "ffprobe.exe" => {
+                    found_ffprobe = true;
+                    ffprobe_target.clone()
+                }
+                _ => continue,
+            };
+            let mut output = std::fs::File::create(&destination)
+                .with_context(|| format!("Không thể tạo {}", destination.display()))?;
+            std::io::copy(&mut entry, &mut output)
+                .with_context(|| format!("Không thể giải nén {}", destination.display()))?;
+            output
+                .sync_all()
+                .with_context(|| format!("Không thể ghi {}", destination.display()))?;
+        }
+        if !found_ffmpeg {
+            bail!("Không tìm thấy ffmpeg.exe trong gói FFmpeg");
+        }
+        if !found_ffprobe {
+            bail!("Không tìm thấy ffprobe.exe trong gói FFmpeg");
+        }
+        Ok(())
+    })
+    .await
+    .context("Không thể giải nén gói FFmpeg")??;
+    Ok(())
+}
+
+fn verify_zip_sha256(path: &Path, expected: &str) -> Result<()> {
+    use sha2::{Digest, Sha256};
+    let expected = expected.trim().to_ascii_lowercase();
+    let mut file = std::fs::File::open(path)
+        .with_context(|| format!("Không thể mở tệp để tính SHA-256: {}", path.display()))?;
+    let mut hasher = Sha256::new();
+    let mut buffer = vec![0_u8; 64 * 1024];
+    loop {
+        let read = std::io::Read::read(&mut file, &mut buffer)
+            .with_context(|| format!("Không thể đọc tệp để tính SHA-256: {}", path.display()))?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    let actual = format!("{:064x}", hasher.finalize());
+    if actual != expected {
+        bail!(
+            "SHA-256 không khớp cho {}: expected {expected}, got {actual}",
+            path.display()
+        );
+    }
+    Ok(())
 }
 
 pub fn update_ytdlp(ytdlp_path: &Path) -> Result<String> {

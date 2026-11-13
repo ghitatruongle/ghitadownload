@@ -12,6 +12,9 @@ use crate::core::ytdlp::YTDLP_DEFAULT_ARGS;
 static DOWNLOAD_SEQ: AtomicU64 = AtomicU64::new(0);
 
 const MAX_ATTEMPTS: u32 = 3;
+const WATCHDOG_TICK_SECS: u64 = 30;
+const WATCHDOG_IDLE_SECS: u64 = 90;
+const WATCHDOG_ATTEMPT_SECS: u64 = 600;
 
 pub(crate) fn backoff_ms(attempt: u32) -> u64 {
     let base = 800u64.saturating_mul(2u64.saturating_pow(attempt));
@@ -133,7 +136,7 @@ impl StreamDownloader {
             args.push("--fragment-retries".to_string());
             args.push("10".to_string());
             args.push("--concurrent-fragments".to_string());
-            args.push("5".to_string());
+            args.push("8".to_string());
             args.push("--buffer-size".to_string());
             args.push("64k".to_string());
             args.push("--no-mtime".to_string());
@@ -169,16 +172,52 @@ impl StreamDownloader {
             let mut err_lines: Vec<String> = Vec::new();
             let mut cancel = cancel.clone();
             let mut lines = tokio::io::BufReader::new(stderr).lines();
+            let started = std::time::Instant::now();
+            let mut last_activity = std::time::Instant::now();
+            let mut watchdog_msg: Option<String> = None;
+            let mut watchdog_tick;
+            let mut post_process = false;
 
             loop {
+                watchdog_tick = false;
                 let line = tokio::select! {
-                    line = lines.next_line() => line.unwrap_or_default(),
+                    line = lines.next_line() => match line {
+                        Ok(Some(line)) => Some(line),
+                        Ok(None) => None,
+                        Err(_) => None,
+                    },
                     _ = cancel.changed() => {
                         let _ = child.kill().await;
                         return Err(anyhow!("Đã hủy"));
                     }
+                    _ = tokio::time::sleep(std::time::Duration::from_secs(WATCHDOG_TICK_SECS)) => {
+                        watchdog_tick = true;
+                        None
+                    }
                 };
-                let Some(line) = line else { break };
+                let Some(line) = line else {
+                    if watchdog_tick {
+                        let idle = if post_process {
+                            std::time::Duration::ZERO
+                        } else {
+                            last_activity.elapsed()
+                        };
+                        if let Some(message) = watchdog_timeout(idle, started.elapsed()) {
+                            let _ = child.kill().await;
+                            watchdog_msg = Some(message.to_string());
+                            break;
+                        }
+                        continue;
+                    }
+                    break;
+                };
+                last_activity = std::time::Instant::now();
+                if line.contains("[Merger]")
+                    || line.contains("[ExtractAudio]")
+                    || line.contains("100% of")
+                {
+                    post_process = true;
+                }
                 {
                     if total_bytes == 0 {
                         if let Some(c) = SIZE_RE.captures(&line) {
@@ -200,13 +239,19 @@ impl StreamDownloader {
                             }
                         }
                     }
-                    let upper = line.to_ascii_uppercase();
-                    if upper.contains("ERROR") || upper.contains("WARNING") {
+                    if is_error_context_line(&line) {
                         if err_lines.len() >= 12 {
                             err_lines.remove(0);
                         }
                         err_lines.push(line);
                     }
+                }
+                if let Some(message) =
+                    watchdog_timeout(std::time::Duration::ZERO, started.elapsed())
+                {
+                    let _ = child.kill().await;
+                    watchdog_msg = Some(message.to_string());
+                    break;
                 }
             }
 
@@ -250,6 +295,8 @@ impl StreamDownloader {
                 }
                 last_err =
                     "Không tìm thấy tệp media hoàn chỉnh sau khi yt-dlp kết thúc".to_string();
+            } else if let Some(message) = watchdog_msg {
+                last_err = message;
             } else {
                 last_err = err_lines.join(" | ");
                 if last_err.trim().is_empty() {
@@ -287,9 +334,38 @@ fn parse_size_bytes(num: &str, unit: &str) -> u64 {
     (value * mult) as u64
 }
 
+fn is_error_context_line(line: &str) -> bool {
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    let upper = trimmed.to_ascii_uppercase();
+    if upper.starts_with("WARNING")
+        || upper.contains(" WARNING")
+        || upper.contains("[WARNING")
+        || upper.contains("(WARNING")
+    {
+        return false;
+    }
+    upper.contains("ERROR")
+}
+
+fn watchdog_timeout(
+    idle: std::time::Duration,
+    attempt: std::time::Duration,
+) -> Option<&'static str> {
+    if idle > std::time::Duration::from_secs(WATCHDOG_IDLE_SECS) {
+        Some("yt-dlp không có tiến triển trong 90 giây (watchdog)")
+    } else if attempt > std::time::Duration::from_secs(WATCHDOG_ATTEMPT_SECS) {
+        Some("yt-dlp vượt quá 10 phút cho một lượt tải (watchdog)")
+    } else {
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::backoff_ms;
+    use super::{backoff_ms, is_error_context_line, watchdog_timeout};
 
     #[test]
     fn backoff_ms_increases_monotonically() {
@@ -300,5 +376,66 @@ mod tests {
         assert!(first < second);
         assert!(second < third);
         assert!(third < 3400);
+    }
+
+    #[test]
+    fn error_context_keeps_error_lines() {
+        assert!(is_error_context_line("ERROR: [youtube] video unavailable"));
+        assert!(is_error_context_line(
+            "  ERROR: sign in to confirm your age  "
+        ));
+        assert!(is_error_context_line(
+            "fatal: unable to connect ERROR state"
+        ));
+        assert!(is_error_context_line(
+            "[youtube] xxx: ERROR during extraction"
+        ));
+    }
+
+    #[test]
+    fn error_context_skips_warnings_blanks_and_noise() {
+        assert!(!is_error_context_line(
+            "WARNING: [youtube] throttling detected"
+        ));
+        assert!(!is_error_context_line("warning: precheck skipped"));
+        assert!(!is_error_context_line(
+            "extractor WARNING unexpectedly ignored ERROR reported"
+        ));
+        assert!(!is_error_context_line(""));
+        assert!(!is_error_context_line("   "));
+        assert!(!is_error_context_line("[download]  42.3% of 4.50MiB"));
+        assert!(!is_error_context_line("[info] Writing video metadata"));
+    }
+
+    #[test]
+    fn watchdog_timeout_flags_idle_and_attempt_caps() {
+        assert_eq!(
+            watchdog_timeout(
+                std::time::Duration::from_secs(91),
+                std::time::Duration::from_secs(5)
+            ),
+            Some("yt-dlp không có tiến triển trong 90 giây (watchdog)")
+        );
+        assert_eq!(
+            watchdog_timeout(
+                std::time::Duration::from_secs(10),
+                std::time::Duration::from_secs(601)
+            ),
+            Some("yt-dlp vượt quá 10 phút cho một lượt tải (watchdog)")
+        );
+        assert_eq!(
+            watchdog_timeout(
+                std::time::Duration::from_secs(30),
+                std::time::Duration::from_secs(599)
+            ),
+            None
+        );
+        assert_eq!(
+            watchdog_timeout(
+                std::time::Duration::ZERO,
+                std::time::Duration::from_secs(601)
+            ),
+            Some("yt-dlp vượt quá 10 phút cho một lượt tải (watchdog)")
+        );
     }
 }

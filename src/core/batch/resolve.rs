@@ -3,7 +3,9 @@ use colored::Colorize;
 use indicatif::{ProgressBar, ProgressStyle};
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
+use crate::core::matching::strip_channel_suffix;
 use crate::core::platform::{PlatformParser, UrlType};
 use crate::core::spotify::{SpotifyClient, SpotifyTrackMeta};
 use crate::core::suno::SunoClient;
@@ -13,11 +15,23 @@ use crate::utils::file_helper::sanitize_name;
 
 use super::{BatchProcessor, DownloadTask};
 
+const RESOLVE_CONCURRENCY: usize = 6;
+
+struct ResolveContext {
+    raw: bool,
+    total_inputs: usize,
+    ytdlp_path: PathBuf,
+    has_node: bool,
+    cookies_file: Option<PathBuf>,
+    cookies_from_browser: Option<String>,
+    spotify: Arc<SpotifyClient>,
+    suno: Arc<SunoClient>,
+    spinner: ProgressBar,
+    interactive: bool,
+}
+
 impl BatchProcessor {
     pub async fn resolve_inputs(&self, raw_inputs: &[String]) -> Result<Vec<DownloadTask>> {
-        let mut tasks = Vec::new();
-        let spotify_client = SpotifyClient::new();
-        let suno_client = SunoClient::new();
         let interactive = std::io::stdout().is_terminal();
 
         let spinner = ProgressBar::new_spinner();
@@ -40,497 +54,588 @@ impl BatchProcessor {
             );
         }
 
+        let cancel = crate::core::cancel::global();
+        let mut cancel_rx = cancel.subscribe();
         let total_inputs = raw_inputs.len();
-        for (idx, input) in raw_inputs.iter().enumerate() {
+        let semaphore = Arc::new(tokio::sync::Semaphore::new(RESOLVE_CONCURRENCY));
+        let context = ResolveContext {
+            raw: self.settings.raw,
+            total_inputs,
+            ytdlp_path: self.ytdlp_path.as_ref().clone(),
+            has_node: self.has_node,
+            cookies_file: self.settings.cookies_file.clone(),
+            cookies_from_browser: self.settings.cookies_from_browser.clone(),
+            spotify: Arc::new(SpotifyClient::new()),
+            suno: Arc::new(SunoClient::new()),
+            spinner: spinner.clone(),
+            interactive,
+        };
+
+        let mut handles: Vec<(usize, tokio::task::JoinHandle<Vec<DownloadTask>>)> = Vec::new();
+        for (index, input) in raw_inputs.iter().enumerate() {
+            if cancel.is_cancelled() {
+                for (_, handle) in handles.drain(..) {
+                    handle.abort();
+                }
+                spinner.finish_and_clear();
+                return Err(anyhow!("Đã hủy"));
+            }
             let trimmed = input.trim();
             if trimmed.is_empty() {
                 continue;
             }
+            let task_context = ResolveContext {
+                raw: context.raw,
+                total_inputs: context.total_inputs,
+                ytdlp_path: context.ytdlp_path.clone(),
+                has_node: context.has_node,
+                cookies_file: context.cookies_file.clone(),
+                cookies_from_browser: context.cookies_from_browser.clone(),
+                spotify: Arc::clone(&context.spotify),
+                suno: Arc::clone(&context.suno),
+                spinner: context.spinner.clone(),
+                interactive: context.interactive,
+            };
+            let permit = Arc::clone(&semaphore);
+            let owned_input = trimmed.to_string();
+            handles.push((
+                index,
+                tokio::spawn(async move {
+                    let _permit = permit.acquire_owned().await;
+                    resolve_single_input(task_context, index, owned_input).await
+                }),
+            ));
+        }
 
-            let step_str = format!("[{}/{}]", idx + 1, total_inputs);
-
-            if self.settings.raw && is_url_input(trimmed) {
-                spinner.set_message(format!(
-                    "{} Chế độ raw: chuyển thẳng cho yt-dlp...",
-                    step_str
-                ));
-                let title = raw_title_from_url(trimmed);
-                tasks.push(build_task(
-                    title.clone(),
-                    trimmed.to_string(),
-                    Vec::new(),
-                    None,
-                    title,
-                    vec!["Raw".to_string()],
-                    "Raw Source".to_string(),
-                    None,
-                    None,
-                    None,
-                    None,
-                ));
-                continue;
+        let mut ordered: Vec<(usize, Vec<DownloadTask>)> = Vec::with_capacity(handles.len());
+        while !handles.is_empty() {
+            if cancel.is_cancelled() {
+                for (_, pending) in handles.drain(..) {
+                    pending.abort();
+                }
+                spinner.finish_and_clear();
+                return Err(anyhow!("Đã hủy"));
             }
-
-            match PlatformParser::parse(trimmed) {
-                UrlType::SpotifyTrack(id) => {
-                    spinner.set_message(format!("{} Đang trích xuất bài hát Spotify...", step_str));
-                    match spotify_client.fetch_track(&id).await {
-                        Ok(meta) => tasks.push(self.spotify_meta_to_task(meta)),
-                        Err(e) => {
-                            spinner_emit(
-                                &spinner,
-                                interactive,
-                                format!(
-                                    "  {} Không lấy được metadata Spotify: {}",
-                                    "⚠".yellow(),
-                                    e
-                                ),
-                            );
-                            tasks.push(self.fallback_task(trimmed, "Spotify"));
-                        }
-                    }
-                }
-                UrlType::SpotifyAlbum(id) => {
-                    spinner.set_message(format!("{} Đang quét Album Spotify...", step_str));
-                    match spotify_client.fetch_album_tracks(&id).await {
-                        Ok((album_name, track_metas)) => {
-                            spinner_emit(
-                                &spinner,
-                                interactive,
-                                format!(
-                                    "  {} Tìm thấy Album: {} ({} bài hát)",
-                                    "✔".green().bold(),
-                                    album_name.cyan(),
-                                    track_metas.len()
-                                ),
-                            );
-                            for meta in track_metas {
-                                tasks.push(self.spotify_meta_to_task(meta));
+            let (index, handle) = handles.remove(0);
+            tokio::select! {
+                joined = handle => {
+                    match joined {
+                        Ok(group) => ordered.push((index, group)),
+                        Err(join_error) => {
+                            if join_error.is_cancelled() {
+                                spinner.finish_and_clear();
+                                return Err(anyhow!("Đã hủy"));
                             }
-                        }
-                        Err(e) => {
-                            spinner_emit(
-                                &spinner,
-                                interactive,
-                                format!("  {} Không lấy được album Spotify: {}", "⚠".yellow(), e),
+                            emit_input_log(
+                                &context,
+                                &format!("[{}/{}] ", index + 1, context.total_inputs),
+                                "⚠ Nguồn bị lỗi nghiêm trọng trong lúc phân tích, bỏ qua nguồn này",
                             );
-                            tasks.push(self.fallback_task(trimmed, "Spotify"));
+                            ordered.push((index, Vec::new()));
                         }
                     }
                 }
-                UrlType::SpotifyPlaylist(id) => {
-                    spinner.set_message(format!("{} Đang quét Playlist Spotify...", step_str));
-                    match spotify_client.fetch_playlist_tracks(&id).await {
-                        Ok((pl_name, track_metas)) => {
-                            spinner_emit(
-                                &spinner,
-                                interactive,
-                                format!(
-                                    "  {} Tìm thấy Playlist: {} ({} bài hát)",
-                                    "✔".green().bold(),
-                                    pl_name.cyan(),
-                                    track_metas.len()
-                                ),
-                            );
-                            for meta in track_metas {
-                                tasks.push(self.spotify_meta_to_task(meta));
-                            }
-                        }
-                        Err(e) => {
-                            spinner_emit(
-                                &spinner,
-                                interactive,
-                                format!(
-                                    "  {} Không lấy được playlist Spotify: {}",
-                                    "⚠".yellow(),
-                                    e
-                                ),
-                            );
-                            tasks.push(self.fallback_task(trimmed, "Spotify"));
-                        }
+                _ = cancel_rx.changed() => {
+                    for (_, pending) in handles.drain(..) {
+                        pending.abort();
                     }
-                }
-                UrlType::YouTubePlaylist(url) | UrlType::YouTubeMusicPlaylist(url) => {
-                    spinner
-                        .set_message(format!("{} Đang quét danh sách phát YouTube...", step_str));
-                    match resolve_youtube_playlist(
-                        self.ytdlp_path.as_path(),
-                        self.has_node,
-                        url.clone(),
-                        self.settings.cookies_file.as_ref(),
-                        self.settings.cookies_from_browser.as_deref(),
-                    )
-                    .await
-                    {
-                        Ok(items) => {
-                            spinner_emit(
-                                &spinner,
-                                interactive,
-                                format!(
-                                    "  {} Tìm thấy Playlist YouTube với {} video/bài hát",
-                                    "✔".green().bold(),
-                                    items.len()
-                                ),
-                            );
-                            let total_items = items.len() as u32;
-                            for (idx, item) in items.into_iter().enumerate() {
-                                let track_num = (idx + 1) as u32;
-                                tasks.push(build_task(
-                                    format!("{} - {}", item.uploader, item.title),
-                                    item.direct_url,
-                                    vec![format!("ytsearch1:{} {}", item.uploader, item.title)],
-                                    None,
-                                    item.title,
-                                    vec![item.uploader],
-                                    "YouTube Music".to_string(),
-                                    None,
-                                    item.thumbnail_url,
-                                    Some(track_num),
-                                    Some(total_items),
-                                ));
-                            }
-                        }
-                        Err(e) => {
-                            spinner_emit(
-                                &spinner,
-                                interactive,
-                                format!(
-                                    "  {} Không lấy được playlist YouTube: {}",
-                                    "⚠".yellow(),
-                                    e
-                                ),
-                            );
-                            tasks.push(self.fallback_task(trimmed, "YouTube"));
-                        }
-                    }
-                }
-                UrlType::YouTubeVideo(url) | UrlType::YouTubeMusicTrack(url) => {
-                    spinner.set_message(format!(
-                        "{} Đang lấy thông tin bài hát YouTube...",
-                        step_str
-                    ));
-                    match resolve_youtube_video(
-                        self.ytdlp_path.as_path(),
-                        self.has_node,
-                        url.clone(),
-                        self.settings.cookies_file.as_ref(),
-                        self.settings.cookies_from_browser.as_deref(),
-                    )
-                    .await
-                    {
-                        Ok(item) => {
-                            let expected = item.duration_secs.map(|d| d.round() as u64);
-                            tasks.push(build_task(
-                                format!("{} - {}", item.uploader, item.title),
-                                item.direct_url,
-                                vec![format!("ytsearch1:{} {}", item.uploader, item.title)],
-                                expected,
-                                item.title,
-                                vec![item.uploader],
-                                "YouTube".to_string(),
-                                None,
-                                item.thumbnail_url,
-                                None,
-                                None,
-                            ));
-                        }
-                        Err(_) => {
-                            tasks.push(self.fallback_task(trimmed, "YouTube"));
-                        }
-                    }
-                }
-                UrlType::SunoTrack(uuid) => {
-                    spinner.set_message(format!(
-                        "{} Đang lấy thông tin bài hát Suno AI...",
-                        step_str
-                    ));
-                    match suno_client.fetch_track(&uuid).await {
-                        Ok(meta) => {
-                            spinner_emit(
-                                &spinner,
-                                interactive,
-                                format!(
-                                    "  {} Tìm thấy bài hát Suno: {}",
-                                    "✔".green().bold(),
-                                    meta.title.cyan()
-                                ),
-                            );
-
-                            let mut fallback_searches = meta.fallback_audio_urls.clone();
-                            fallback_searches
-                                .push(format!("ytsearch1:{} {}", meta.artist, meta.title));
-                            fallback_searches
-                                .push(format!("ytsearch3:{} {}", meta.artist, meta.title));
-                            tasks.push(build_task(
-                                format!("{} - {}", meta.artist, meta.title),
-                                format!("suno:{}", uuid),
-                                fallback_searches,
-                                meta.duration_secs.map(|d| d.round() as u64),
-                                meta.title,
-                                vec![meta.artist],
-                                "Suno AI Music".to_string(),
-                                None,
-                                meta.cover_url,
-                                None,
-                                None,
-                            ));
-                        }
-                        Err(error) => {
-                            spinner_emit(
-                                &spinner,
-                                interactive,
-                                format!("  {} Không lấy được media Suno: {}", "✖".red(), error),
-                            );
-                            tasks.push(self.fallback_task(trimmed, "Suno AI"));
-                        }
-                    }
-                }
-                UrlType::SunoShare(share_url) => {
-                    spinner.set_message(format!(
-                        "{} Đang phân giải liên kết chia sẻ Suno AI...",
-                        step_str
-                    ));
-                    match suno_client.resolve_share_url(&share_url).await {
-                        Ok(uuid) => match suno_client.fetch_track(&uuid).await {
-                            Ok(meta) => {
-                                spinner_emit(
-                                    &spinner,
-                                    interactive,
-                                    format!(
-                                        "  {} Tìm thấy bài hát Suno: {}",
-                                        "✔".green().bold(),
-                                        meta.title.cyan()
-                                    ),
-                                );
-                                let mut fallback_searches = meta.fallback_audio_urls.clone();
-                                fallback_searches
-                                    .push(format!("ytsearch1:{} - {}", meta.artist, meta.title));
-                                let expected = meta.duration_secs.map(|d| d.round() as u64);
-                                tasks.push(build_task(
-                                    meta.title.clone(),
-                                    format!("suno:{}", meta.uuid),
-                                    fallback_searches,
-                                    expected,
-                                    meta.title,
-                                    vec![meta.artist],
-                                    "Suno AI".to_string(),
-                                    None,
-                                    meta.cover_url,
-                                    None,
-                                    None,
-                                ));
-                            }
-                            Err(error) => {
-                                spinner_emit(
-                                    &spinner,
-                                    interactive,
-                                    format!("  {} Không lấy được media Suno: {}", "✖".red(), error),
-                                );
-                                tasks.push(self.fallback_task(trimmed, "Suno AI"));
-                            }
-                        },
-                        Err(error) => {
-                            spinner_emit(
-                                &spinner,
-                                interactive,
-                                format!("  {} Lỗi liên kết Suno: {}", "✖".red(), error),
-                            );
-                            tasks.push(self.fallback_task(trimmed, "Suno AI"));
-                        }
-                    }
-                }
-                UrlType::SunoPlaylist(uuid) => {
-                    spinner.set_message(format!("{} Đang quét Playlist Suno AI...", step_str));
-                    match suno_client.fetch_playlist(&uuid).await {
-                        Ok((playlist_name, tracks)) => {
-                            spinner_emit(
-                                &spinner,
-                                interactive,
-                                format!(
-                                    "  {} Tìm thấy Playlist Suno: {} ({} bài hát)",
-                                    "✔".green().bold(),
-                                    playlist_name.cyan(),
-                                    tracks.len()
-                                ),
-                            );
-                            let total = tracks.len() as u32;
-                            for (idx, meta) in tracks.into_iter().enumerate() {
-                                let mut fallback_searches = meta.fallback_audio_urls.clone();
-                                fallback_searches
-                                    .push(format!("ytsearch1:{} {}", meta.artist, meta.title));
-                                fallback_searches
-                                    .push(format!("ytsearch3:{} {}", meta.artist, meta.title));
-                                tasks.push(build_task(
-                                    format!("{} - {}", meta.artist, meta.title),
-                                    format!("suno:{}", meta.uuid),
-                                    fallback_searches,
-                                    meta.duration_secs.map(|d| d.round() as u64),
-                                    meta.title,
-                                    vec![meta.artist],
-                                    playlist_name.clone(),
-                                    None,
-                                    meta.cover_url,
-                                    Some((idx + 1) as u32),
-                                    Some(total),
-                                ));
-                            }
-                        }
-                        Err(error) => {
-                            spinner_emit(
-                                &spinner,
-                                interactive,
-                                format!("  {} Không lấy được playlist Suno: {}", "✖".red(), error),
-                            );
-                            tasks.push(self.fallback_task(trimmed, "Suno AI"));
-                        }
-                    }
-                }
-                UrlType::DirectMedia(url) => {
-                    spinner.set_message(format!(
-                        "{} Đang nhận diện tệp media trực tiếp...",
-                        step_str
-                    ));
-                    let title = url
-                        .rsplit('/')
-                        .next()
-                        .map(|name| name.split('?').next().unwrap_or(name).to_string())
-                        .filter(|name| !name.is_empty())
-                        .unwrap_or_else(|| "media_track".to_string());
-                    let title = title
-                        .rsplit_once('.')
-                        .map(|(stem, _)| stem.to_string())
-                        .unwrap_or(title);
-                    tasks.push(build_task(
-                        title.clone(),
-                        url.clone(),
-                        Vec::new(),
-                        None,
-                        title,
-                        vec!["Direct".to_string()],
-                        "Direct Media".to_string(),
-                        None,
-                        None,
-                        None,
-                        None,
-                    ));
-                }
-                UrlType::SocialVideo { url, platform_name } => {
-                    spinner.set_message(format!(
-                        "{} Đang lấy thông tin {}...",
-                        step_str, platform_name
-                    ));
-                    if let Ok(item) = resolve_youtube_media(
-                        self.ytdlp_path.as_path(),
-                        self.has_node,
-                        url.clone(),
-                        platform_name.clone(),
-                        self.settings.cookies_file.as_ref(),
-                        self.settings.cookies_from_browser.as_deref(),
-                    )
-                    .await
-                    {
-                        tasks.push(build_task(
-                            format!("{} - {}", item.uploader, item.title),
-                            item.direct_url,
-                            Vec::new(),
-                            None,
-                            item.title,
-                            vec![item.uploader],
-                            platform_name.clone(),
-                            None,
-                            item.thumbnail_url,
-                            None,
-                            None,
-                        ));
-                    } else {
-                        tasks.push(build_task(
-                            format!("{} - {}", platform_name, sanitize_name(trimmed)),
-                            trimmed.to_string(),
-                            Vec::new(),
-                            None,
-                            format!("{} Audio", platform_name),
-                            vec![platform_name.clone()],
-                            platform_name.clone(),
-                            None,
-                            None,
-                            None,
-                            None,
-                        ));
-                    }
-                }
-                UrlType::DirectSearch(query) => {
-                    spinner.set_message(format!("{} Tìm kiếm: {}...", step_str, query));
-                    tasks.push(build_task(
-                        query.clone(),
-                        format!("ytsearch1:{}", query),
-                        vec![
-                            format!("ytsearch3:{}", query),
-                            format!("ytsearch1:{} official audio", query),
-                        ],
-                        None,
-                        query.clone(),
-                        vec!["Search".to_string()],
-                        "Search".to_string(),
-                        None,
-                        None,
-                        None,
-                        None,
-                    ));
+                    spinner.finish_and_clear();
+                    return Err(anyhow!("Đã hủy"));
                 }
             }
+        }
+
+        let mut tasks = Vec::new();
+        for (_, group) in ordered {
+            tasks.extend(group);
         }
 
         spinner.finish_and_clear();
         Ok(tasks)
     }
+}
 
-    fn fallback_task(&self, source: &str, platform_name: &str) -> DownloadTask {
-        let title = sanitize_name(source);
-        build_task(
-            format!("{} - {}", platform_name, title),
-            source.to_string(),
+async fn resolve_single_input(
+    context: ResolveContext,
+    index: usize,
+    input: String,
+) -> Vec<DownloadTask> {
+    if crate::core::cancel::global().is_cancelled() {
+        return Vec::new();
+    }
+    let step = format!("[{}/{}] ", index + 1, context.total_inputs);
+    let trimmed = input.trim().to_string();
+    if trimmed.is_empty() {
+        return Vec::new();
+    }
+
+    if context.raw && is_url_input(&trimmed) {
+        emit_input_log(&context, &step, "Chế độ raw: chuyển thẳng cho yt-dlp...");
+        let title = raw_title_from_url(&trimmed);
+        return vec![build_task(
+            title.clone(),
+            trimmed.clone(),
             Vec::new(),
             None,
             title,
-            vec![platform_name.to_string()],
-            platform_name.to_string(),
+            vec!["Raw".to_string()],
+            "Raw Source".to_string(),
             None,
             None,
             None,
             None,
-        )
+        )];
     }
 
-    fn spotify_meta_to_task(&self, meta: SpotifyTrackMeta) -> DownloadTask {
-        let artist_str = meta.artists.join(", ");
-        let display_title = format!("{} - {}", artist_str, meta.title);
-        let primary_artist = meta.artists.first().cloned().unwrap_or_default();
-        let search_target = format!("ytsearch1:{}", meta.search_query);
+    let mut tasks: Vec<DownloadTask> = Vec::new();
 
-        let fallback_searches = vec![
-            format!("ytsearch1:{} {} Topic", primary_artist, meta.title),
-            format!("ytsearch1:{} {} official audio", primary_artist, meta.title),
-            format!("ytsearch1:{} - {}", primary_artist, meta.title),
-            format!("ytsearch1:{} {}", primary_artist, meta.title),
-            format!("ytsearch3:{} {}", primary_artist, meta.title),
-        ];
+    match PlatformParser::parse(&trimmed) {
+        UrlType::SpotifyTrack(id) => {
+            emit_input_log(&context, &step, "Đang trích xuất bài hát Spotify...");
+            match context.spotify.fetch_track(&id).await {
+                Ok(meta) => tasks.push(build_spotify_task(meta)),
+                Err(e) => {
+                    emit_input_log(
+                        &context,
+                        &step,
+                        &format!("  {} Không lấy được metadata Spotify: {}", "⚠".yellow(), e),
+                    );
+                    tasks.push(build_fallback_task(&trimmed, "Spotify"));
+                }
+            }
+        }
+        UrlType::SpotifyAlbum(id) => {
+            emit_input_log(&context, &step, "Đang quét Album Spotify...");
+            match context.spotify.fetch_album_tracks(&id).await {
+                Ok((album_name, track_metas)) => {
+                    emit_input_log(
+                        &context,
+                        &step,
+                        &format!(
+                            "  {} Tìm thấy Album: {} ({} bài hát)",
+                            "✔".green().bold(),
+                            album_name.cyan(),
+                            track_metas.len()
+                        ),
+                    );
+                    for meta in track_metas {
+                        tasks.push(build_spotify_task(meta));
+                    }
+                }
+                Err(e) => {
+                    emit_input_log(
+                        &context,
+                        &step,
+                        &format!("  {} Không lấy được album Spotify: {}", "⚠".yellow(), e),
+                    );
+                    tasks.push(build_fallback_task(&trimmed, "Spotify"));
+                }
+            }
+        }
+        UrlType::SpotifyPlaylist(id) => {
+            emit_input_log(&context, &step, "Đang quét Playlist Spotify...");
+            match context.spotify.fetch_playlist_tracks(&id).await {
+                Ok((pl_name, track_metas)) => {
+                    emit_input_log(
+                        &context,
+                        &step,
+                        &format!(
+                            "  {} Tìm thấy Playlist: {} ({} bài hát)",
+                            "✔".green().bold(),
+                            pl_name.cyan(),
+                            track_metas.len()
+                        ),
+                    );
+                    for meta in track_metas {
+                        tasks.push(build_spotify_task(meta));
+                    }
+                }
+                Err(e) => {
+                    emit_input_log(
+                        &context,
+                        &step,
+                        &format!("  {} Không lấy được playlist Spotify: {}", "⚠".yellow(), e),
+                    );
+                    tasks.push(build_fallback_task(&trimmed, "Spotify"));
+                }
+            }
+        }
+        UrlType::YouTubePlaylist(url) | UrlType::YouTubeMusicPlaylist(url) => {
+            emit_input_log(&context, &step, "Đang quét danh sách phát YouTube...");
+            match resolve_youtube_playlist(
+                context.ytdlp_path.as_path(),
+                context.has_node,
+                url.clone(),
+                context.cookies_file.as_ref(),
+                context.cookies_from_browser.as_deref(),
+            )
+            .await
+            {
+                Ok(items) => {
+                    emit_input_log(
+                        &context,
+                        &step,
+                        &format!(
+                            "  {} Tìm thấy Playlist YouTube với {} video/bài hát",
+                            "✔".green().bold(),
+                            items.len()
+                        ),
+                    );
+                    let total_items = items.len() as u32;
+                    for (idx, item) in items.into_iter().enumerate() {
+                        let track_num = (idx + 1) as u32;
+                        tasks.push(build_task(
+                            format!("{} - {}", item.uploader, item.title),
+                            item.direct_url,
+                            vec![format!("ytsearch1:{} {}", item.uploader, item.title)],
+                            None,
+                            item.title,
+                            vec![strip_channel_suffix(&item.uploader)],
+                            "YouTube Music".to_string(),
+                            None,
+                            item.thumbnail_url,
+                            Some(track_num),
+                            Some(total_items),
+                        ));
+                    }
+                }
+                Err(e) => {
+                    emit_input_log(
+                        &context,
+                        &step,
+                        &format!("  {} Không lấy được playlist YouTube: {}", "⚠".yellow(), e),
+                    );
+                    tasks.push(build_fallback_task(&trimmed, "YouTube"));
+                }
+            }
+        }
+        UrlType::YouTubeVideo(url) | UrlType::YouTubeMusicTrack(url) => {
+            emit_input_log(&context, &step, "Đang lấy thông tin bài hát YouTube...");
+            match resolve_youtube_video(
+                context.ytdlp_path.as_path(),
+                context.has_node,
+                url.clone(),
+                context.cookies_file.as_ref(),
+                context.cookies_from_browser.as_deref(),
+            )
+            .await
+            {
+                Ok(item) => {
+                    let expected = item.duration_secs.map(|d| d.round() as u64);
+                    tasks.push(build_task(
+                        format!("{} - {}", item.uploader, item.title),
+                        item.direct_url,
+                        vec![format!("ytsearch1:{} {}", item.uploader, item.title)],
+                        expected,
+                        item.title,
+                        vec![strip_channel_suffix(&item.uploader)],
+                        "YouTube".to_string(),
+                        None,
+                        item.thumbnail_url,
+                        None,
+                        None,
+                    ));
+                }
+                Err(_) => {
+                    tasks.push(build_fallback_task(&trimmed, "YouTube"));
+                }
+            }
+        }
+        UrlType::SunoTrack(uuid) => {
+            emit_input_log(&context, &step, "Đang lấy thông tin bài hát Suno AI...");
+            match context.suno.fetch_track(&uuid).await {
+                Ok(meta) => {
+                    emit_input_log(
+                        &context,
+                        &step,
+                        &format!(
+                            "  {} Tìm thấy bài hát Suno: {}",
+                            "✔".green().bold(),
+                            meta.title.cyan()
+                        ),
+                    );
 
-        let expected_duration_secs = meta.duration_ms.map(|ms| ms / 1000);
-
-        build_task(
-            display_title,
-            search_target,
-            fallback_searches,
-            expected_duration_secs,
-            meta.title,
-            meta.artists,
-            meta.album,
-            meta.release_year,
-            meta.cover_url,
-            meta.track_number,
-            meta.total_tracks,
-        )
+                    let mut fallback_searches = meta.fallback_audio_urls.clone();
+                    fallback_searches.push(format!("ytsearch1:{} {}", meta.artist, meta.title));
+                    fallback_searches.push(format!("ytsearch3:{} {}", meta.artist, meta.title));
+                    tasks.push(build_task(
+                        format!("{} - {}", meta.artist, meta.title),
+                        format!("suno:{}", uuid),
+                        fallback_searches,
+                        meta.duration_secs.map(|d| d.round() as u64),
+                        meta.title,
+                        vec![meta.artist],
+                        "Suno AI Music".to_string(),
+                        None,
+                        meta.cover_url,
+                        None,
+                        None,
+                    ));
+                }
+                Err(error) => {
+                    emit_input_log(
+                        &context,
+                        &step,
+                        &format!("  {} Không lấy được media Suno: {}", "✖".red(), error),
+                    );
+                    tasks.push(build_fallback_task(&trimmed, "Suno AI"));
+                }
+            }
+        }
+        UrlType::SunoShare(share_url) => {
+            emit_input_log(
+                &context,
+                &step,
+                "Đang phân giải liên kết chia sẻ Suno AI...",
+            );
+            match context.suno.resolve_share_url(&share_url).await {
+                Ok(uuid) => match context.suno.fetch_track(&uuid).await {
+                    Ok(meta) => {
+                        emit_input_log(
+                            &context,
+                            &step,
+                            &format!(
+                                "  {} Tìm thấy bài hát Suno: {}",
+                                "✔".green().bold(),
+                                meta.title.cyan()
+                            ),
+                        );
+                        let mut fallback_searches = meta.fallback_audio_urls.clone();
+                        fallback_searches
+                            .push(format!("ytsearch1:{} - {}", meta.artist, meta.title));
+                        let expected = meta.duration_secs.map(|d| d.round() as u64);
+                        tasks.push(build_task(
+                            meta.title.clone(),
+                            format!("suno:{}", meta.uuid),
+                            fallback_searches,
+                            expected,
+                            meta.title,
+                            vec![meta.artist],
+                            "Suno AI".to_string(),
+                            None,
+                            meta.cover_url,
+                            None,
+                            None,
+                        ));
+                    }
+                    Err(error) => {
+                        emit_input_log(
+                            &context,
+                            &step,
+                            &format!("  {} Không lấy được media Suno: {}", "✖".red(), error),
+                        );
+                        tasks.push(build_fallback_task(&trimmed, "Suno AI"));
+                    }
+                },
+                Err(error) => {
+                    emit_input_log(
+                        &context,
+                        &step,
+                        &format!("  {} Lỗi liên kết Suno: {}", "✖".red(), error),
+                    );
+                    tasks.push(build_fallback_task(&trimmed, "Suno AI"));
+                }
+            }
+        }
+        UrlType::SunoPlaylist(uuid) => {
+            emit_input_log(&context, &step, "Đang quét Playlist Suno AI...");
+            match context.suno.fetch_playlist(&uuid).await {
+                Ok((playlist_name, tracks)) => {
+                    emit_input_log(
+                        &context,
+                        &step,
+                        &format!(
+                            "  {} Tìm thấy Playlist Suno: {} ({} bài hát)",
+                            "✔".green().bold(),
+                            playlist_name.cyan(),
+                            tracks.len()
+                        ),
+                    );
+                    let total = tracks.len() as u32;
+                    for (idx, meta) in tracks.into_iter().enumerate() {
+                        let mut fallback_searches = meta.fallback_audio_urls.clone();
+                        fallback_searches.push(format!("ytsearch1:{} {}", meta.artist, meta.title));
+                        fallback_searches.push(format!("ytsearch3:{} {}", meta.artist, meta.title));
+                        tasks.push(build_task(
+                            format!("{} - {}", meta.artist, meta.title),
+                            format!("suno:{}", meta.uuid),
+                            fallback_searches,
+                            meta.duration_secs.map(|d| d.round() as u64),
+                            meta.title,
+                            vec![meta.artist],
+                            playlist_name.clone(),
+                            None,
+                            meta.cover_url,
+                            Some((idx + 1) as u32),
+                            Some(total),
+                        ));
+                    }
+                }
+                Err(error) => {
+                    emit_input_log(
+                        &context,
+                        &step,
+                        &format!("  {} Không lấy được playlist Suno: {}", "✖".red(), error),
+                    );
+                    tasks.push(build_fallback_task(&trimmed, "Suno AI"));
+                }
+            }
+        }
+        UrlType::DirectMedia(url) => {
+            emit_input_log(&context, &step, "Đang nhận diện tệp media trực tiếp...");
+            let title = url
+                .rsplit('/')
+                .next()
+                .map(|name| name.split('?').next().unwrap_or(name).to_string())
+                .filter(|name| !name.is_empty())
+                .unwrap_or_else(|| "media_track".to_string());
+            let title = title
+                .rsplit_once('.')
+                .map(|(stem, _)| stem.to_string())
+                .unwrap_or(title);
+            tasks.push(build_task(
+                title.clone(),
+                url.clone(),
+                Vec::new(),
+                None,
+                title,
+                vec!["Direct".to_string()],
+                "Direct Media".to_string(),
+                None,
+                None,
+                None,
+                None,
+            ));
+        }
+        UrlType::SocialVideo { url, platform_name } => {
+            emit_input_log(
+                &context,
+                &step,
+                &format!("Đang lấy thông tin {}...", platform_name),
+            );
+            if let Ok(item) = resolve_youtube_media(
+                context.ytdlp_path.as_path(),
+                context.has_node,
+                url.clone(),
+                platform_name.clone(),
+                context.cookies_file.as_ref(),
+                context.cookies_from_browser.as_deref(),
+            )
+            .await
+            {
+                let cleaned_uploader = strip_channel_suffix(&item.uploader);
+                tasks.push(build_task(
+                    format!("{} - {}", cleaned_uploader, item.title),
+                    item.direct_url,
+                    Vec::new(),
+                    None,
+                    item.title,
+                    vec![cleaned_uploader],
+                    platform_name.clone(),
+                    None,
+                    item.thumbnail_url,
+                    None,
+                    None,
+                ));
+            } else {
+                tasks.push(build_task(
+                    format!("{} - {}", platform_name, sanitize_name(&trimmed)),
+                    trimmed.clone(),
+                    Vec::new(),
+                    None,
+                    format!("{} Audio", platform_name),
+                    vec![platform_name.clone()],
+                    platform_name.clone(),
+                    None,
+                    None,
+                    None,
+                    None,
+                ));
+            }
+        }
+        UrlType::DirectSearch(query) => {
+            emit_input_log(&context, &step, &format!("Tìm kiếm: {}...", query));
+            tasks.push(build_task(
+                query.clone(),
+                format!("ytsearch1:{}", query),
+                vec![
+                    format!("ytsearch3:{}", query),
+                    format!("ytsearch1:{} official audio", query),
+                ],
+                None,
+                query.clone(),
+                vec!["Search".to_string()],
+                "Search".to_string(),
+                None,
+                None,
+                None,
+                None,
+            ));
+        }
     }
+
+    tasks
+}
+
+fn spotify_fallback_searches(primary_artist: &str, artists: &[String], title: &str) -> Vec<String> {
+    let mut fallbacks = vec![
+        format!("ytsearch1:{primary_artist} {title} Topic"),
+        format!("ytsearch1:{primary_artist} - {title}"),
+        format!("ytsearch1:{primary_artist} {title}"),
+        format!("ytsearch3:{primary_artist} {title}"),
+    ];
+    if let Some(second_artist) = artists
+        .get(1)
+        .filter(|artist| !artist.trim().is_empty() && artist.trim() != primary_artist)
+    {
+        fallbacks.insert(
+            0,
+            format!("ytsearch1:{second_artist} {title} official audio"),
+        );
+    }
+    fallbacks
+}
+
+fn build_spotify_task(meta: SpotifyTrackMeta) -> DownloadTask {
+    let artist_str = meta.artists.join(", ");
+    let display_title = format!("{} - {}", artist_str, meta.title);
+    let primary_artist = meta.artists.first().cloned().unwrap_or_default();
+    let search_target = format!("ytsearch1:{}", meta.search_query);
+    let fallback_searches = spotify_fallback_searches(&primary_artist, &meta.artists, &meta.title);
+    let expected_duration_secs = meta
+        .duration_ms
+        .map(|ms| (ms as f64 / 1000.0).round() as u64);
+
+    build_task(
+        display_title,
+        search_target,
+        fallback_searches,
+        expected_duration_secs,
+        meta.title,
+        meta.artists,
+        meta.album,
+        meta.release_year,
+        meta.cover_url,
+        meta.track_number,
+        meta.total_tracks,
+    )
+}
+
+fn build_fallback_task(source: &str, platform_name: &str) -> DownloadTask {
+    let title = sanitize_name(source);
+    build_task(
+        format!("{} - {}", platform_name, title),
+        source.to_string(),
+        Vec::new(),
+        None,
+        title,
+        vec![platform_name.to_string()],
+        platform_name.to_string(),
+        None,
+        None,
+        None,
+        None,
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -571,6 +676,14 @@ fn spinner_emit(spinner: &ProgressBar, interactive: bool, message: String) {
     } else {
         println!("{message}");
     }
+}
+
+fn emit_input_log(context: &ResolveContext, step: &str, message: &str) {
+    spinner_emit(
+        &context.spinner,
+        context.interactive,
+        format!("{}{}", step, message),
+    );
 }
 
 fn is_url_input(input: &str) -> bool {
@@ -693,7 +806,48 @@ async fn resolve_youtube_media(
 
 #[cfg(test)]
 mod tests {
-    use super::{is_url_input, raw_title_from_url};
+    use super::{is_url_input, raw_title_from_url, spotify_fallback_searches};
+
+    #[test]
+    fn spotify_fallback_searches_remove_duplicate_and_add_collab_target() {
+        let single = spotify_fallback_searches("Ca Si A", &["Ca Si A".to_string()], "Bai Hat");
+        assert_eq!(
+            single,
+            vec![
+                "ytsearch1:Ca Si A Bai Hat Topic".to_string(),
+                "ytsearch1:Ca Si A - Bai Hat".to_string(),
+                "ytsearch1:Ca Si A Bai Hat".to_string(),
+                "ytsearch3:Ca Si A Bai Hat".to_string(),
+            ],
+            "fallback không được chứa slot trùng với target chính (official audio)"
+        );
+
+        let collab = spotify_fallback_searches(
+            "Ca Si A",
+            &["Ca Si A".to_string(), "Ca Si B".to_string()],
+            "Bai Hat",
+        );
+        assert_eq!(
+            collab[0], "ytsearch1:Ca Si B Bai Hat official audio",
+            "fallback collab phải đứng sớm trong chuỗi dự phòng"
+        );
+        assert_eq!(collab.len(), 5);
+        let mut unique = collab.clone();
+        unique.sort();
+        unique.dedup();
+        assert_eq!(unique.len(), collab.len(), "fallback không được trùng nhau");
+
+        let duplicated_artist = spotify_fallback_searches(
+            "Ca Si A",
+            &["Ca Si A".to_string(), "Ca Si A".to_string()],
+            "Bai Hat",
+        );
+        assert_eq!(
+            duplicated_artist.len(),
+            4,
+            "ca sĩ trùng ca sĩ chính không được sinh fallback trùng lặp"
+        );
+    }
 
     #[test]
     fn is_url_input_accepts_http_and_https_only() {

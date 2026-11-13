@@ -1,10 +1,10 @@
 use anyhow::{anyhow, Result};
 use colored::Colorize;
-use indicatif::{MultiProgress, ProgressBar};
+use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use std::future::Future;
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 use tokio::sync::Semaphore;
 use tokio::task::{JoinError, JoinSet};
 
@@ -18,7 +18,14 @@ use super::{
     FailedQueue, TaskOutcome, DEFAULT_CONCURRENCY, FAILED_QUEUE_FILE,
 };
 
-const PENDING_WRITE_EVERY: usize = 5;
+const PENDING_WRITE_EVERY: usize = 15;
+
+static TOTAL_BAR_STYLE: LazyLock<ProgressStyle> = LazyLock::new(|| {
+    ProgressStyle::default_bar()
+        .template("{wide_bar:.cyan/blue} {pos}/{len} bài · {eta} · {msg}")
+        .unwrap()
+        .progress_chars("=>-")
+});
 
 impl BatchProcessor {
     pub async fn execute_batch(&self, tasks: &[DownloadTask]) -> Result<BatchOutcome> {
@@ -27,6 +34,8 @@ impl BatchProcessor {
             return Ok(BatchOutcome {
                 success_count: 0,
                 failed_tasks: Vec::new(),
+                elapsed_secs: 0.0,
+                total_bytes: 0,
             });
         }
 
@@ -65,6 +74,10 @@ impl BatchProcessor {
         let has_node = self.has_node;
         let total = tasks.len();
         let cancel = Cancellation::new();
+        let started = std::time::Instant::now();
+        let total_bar = multi.add(ProgressBar::new(tasks.len() as u64));
+        total_bar.set_style(TOTAL_BAR_STYLE.clone());
+        total_bar.set_message("đang tải");
 
         let mut set = JoinSet::new();
 
@@ -91,6 +104,7 @@ impl BatchProcessor {
                             task,
                             task_index: index,
                             source_note: None,
+                            produced_bytes: 0,
                         });
                     }
                 };
@@ -103,11 +117,13 @@ impl BatchProcessor {
                         task,
                         task_index: index,
                         source_note: None,
+                        produced_bytes: 0,
                     });
                 }
 
                 let handle = multi.add(ProgressBar::new(0));
-                indexed_spawn(
+                let board = handle.clone();
+                let result = indexed_spawn(
                     index,
                     process_task(
                         task,
@@ -126,17 +142,22 @@ impl BatchProcessor {
                         },
                     ),
                 )
-                .await
+                .await;
+                if result.is_err() {
+                    board.finish_with_message("✖ tác vụ gặp lỗi nghiêm trọng");
+                }
+                result
             });
         }
 
         let mut success_count = 0usize;
+        let mut total_bytes: u64 = 0;
         let mut failed_tasks: Vec<(usize, DownloadTask)> = Vec::new();
         let mut source_notes: Vec<(usize, Option<String>)> = Vec::new();
         let mut completed_ok: std::collections::HashSet<usize> = std::collections::HashSet::new();
         let logs_to_terminal = std::io::stdout().is_terminal();
 
-        {
+        let watcher_handle = {
             let watcher_cancel = cancel.clone();
             tokio::spawn(async move {
                 let mut watch_rx = global().subscribe();
@@ -146,12 +167,13 @@ impl BatchProcessor {
                         break;
                     }
                 }
-            });
-        }
+            })
+        };
 
         while let Some(joined) = set.join_next().await {
             match joined {
                 Ok(Ok(outcome)) => {
+                    total_bar.inc(1);
                     for line in &outcome.logs {
                         if logs_to_terminal {
                             let _ = multi.println(line);
@@ -162,6 +184,7 @@ impl BatchProcessor {
                     source_notes.push((outcome.task_index, outcome.source_note));
                     if outcome.ok {
                         success_count += 1;
+                        total_bytes += outcome.produced_bytes;
                         completed_ok.insert(outcome.task_index);
                         if completed_ok.len().is_multiple_of(PENDING_WRITE_EVERY) {
                             let remaining: Vec<DownloadTask> = tasks
@@ -188,6 +211,7 @@ impl BatchProcessor {
                     }
                 }
                 Ok(Err((index, e))) => {
+                    total_bar.inc(1);
                     let message = format!("    Lỗi tác vụ {}: {}", index + 1, e);
                     if logs_to_terminal {
                         let _ = multi.println(format!("{}", message.red()));
@@ -199,6 +223,7 @@ impl BatchProcessor {
                     }
                 }
                 Err(e) => {
+                    total_bar.inc(1);
                     let message = format!("    Lỗi điều phối tác vụ: {}", e);
                     if logs_to_terminal {
                         let _ = multi.println(format!("{}", message.red()));
@@ -208,6 +233,7 @@ impl BatchProcessor {
                 }
             }
         }
+        watcher_handle.abort();
 
         let cancelled = cancel.is_cancelled();
 
@@ -298,22 +324,17 @@ impl BatchProcessor {
             Err(e) => println!("{}", format!("  Không thể ghi manifest: {}", e).red()),
         }
 
-        println!("══════════════════════════════════════════════");
-        println!(
-            "{} Hoàn thành tải hàng loạt! Thành công: {} | Lỗi: {}",
-            "🎉".green(),
-            success_count.to_string().green().bold(),
-            failed_tasks.len().to_string().red()
-        );
-        println!(
-            "Thư mục lưu bài hát: {}",
-            clean_output_dir.display().to_string().cyan()
-        );
-        println!("══════════════════════════════════════════════\n");
+        total_bar.finish_with_message(if cancelled {
+            "đã dừng"
+        } else {
+            "hoàn tất"
+        });
 
         Ok(BatchOutcome {
             success_count,
             failed_tasks,
+            elapsed_secs: started.elapsed().as_secs_f64(),
+            total_bytes,
         })
     }
 }
@@ -351,6 +372,13 @@ fn create_execution_temp_dir(output_dir: &Path) -> Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::indexed_spawn;
+    use super::TOTAL_BAR_STYLE;
+
+    #[test]
+    fn total_bar_style_template_parses_and_clones() {
+        let style = TOTAL_BAR_STYLE.clone();
+        let _ = style.get_tick_str(0);
+    }
 
     #[tokio::test]
     async fn indexed_spawn_returns_output_on_success() {

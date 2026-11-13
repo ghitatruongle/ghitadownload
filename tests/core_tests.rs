@@ -1,4 +1,5 @@
 use ghita_download::core::config::{AppConfig, AudioFormat, AudioQuality, DownloadSettings};
+use ghita_download::core::matching::SearchCandidate;
 use ghita_download::core::platform::{PlatformParser, UrlType};
 use ghita_download::core::spotify::SpotifyClient;
 use ghita_download::utils::file_helper::sanitize_name;
@@ -781,9 +782,28 @@ fn test_replace_file_replaces_and_keeps_working_on_second_replace() {
     let _ = std::fs::remove_dir_all(&base);
 }
 
+#[cfg(windows)]
+fn set_stale_dir_mtime(dir: &std::path::Path, time: std::time::SystemTime) {
+    use std::os::windows::fs::OpenOptionsExt;
+    let file = std::fs::OpenOptions::new()
+        .write(true)
+        .custom_flags(0x0200_0000)
+        .open(dir)
+        .unwrap();
+    file.set_modified(time).unwrap();
+}
+
+#[cfg(not(windows))]
+fn set_stale_dir_mtime(dir: &std::path::Path, time: std::time::SystemTime) {
+    std::fs::File::open(dir)
+        .and_then(|file| file.set_modified(time))
+        .unwrap();
+}
+
 #[test]
 fn test_sweep_stale_temp_dirs_removes_only_temp_prefix() {
     use ghita_download::utils::file_helper::sweep_stale_temp_dirs;
+    use std::time::{Duration, SystemTime};
 
     let base = std::env::temp_dir().join(format!("ghita_sweep_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&base);
@@ -800,6 +820,17 @@ fn test_sweep_stale_temp_dirs_removes_only_temp_prefix() {
     std::fs::create_dir_all(&keep_dir).unwrap();
     let keep_file = base.join(".ghita_temp_file.txt");
     std::fs::write(&keep_file, b"not a dir").unwrap();
+
+    let old_time = SystemTime::now() - Duration::from_secs(60 * 60);
+    set_stale_dir_mtime(&stale, old_time);
+    set_stale_dir_mtime(&stale_two, old_time);
+    {
+        let leftover = std::fs::OpenOptions::new()
+            .write(true)
+            .open(stale.join("leftover.tmp"))
+            .unwrap();
+        leftover.set_modified(old_time).unwrap();
+    }
 
     let removed = sweep_stale_temp_dirs(&base).unwrap();
     assert_eq!(removed, 2);
@@ -940,4 +971,133 @@ fn test_write_manifest_records_source_note_per_task() {
     assert!(results[1].get("source_note").is_none());
 
     let _ = std::fs::remove_dir_all(&tmp_dir);
+}
+
+fn matching_candidate(title: &str, uploader: &str, duration: Option<f64>) -> SearchCandidate {
+    SearchCandidate {
+        url: format!("https://www.youtube.com/watch?v={title}"),
+        title: title.to_string(),
+        uploader: uploader.to_string(),
+        duration_secs: duration,
+    }
+}
+
+#[test]
+fn test_matching_rejects_duration_diff_over_15s_even_with_perfect_match() {
+    use ghita_download::core::matching::pick_best;
+
+    let artists = vec!["Perfect Artist".to_string()];
+    let far = vec![matching_candidate(
+        "Perfect Song",
+        "Perfect Artist - Topic",
+        Some(220.0),
+    )];
+    assert!(
+        pick_best(&far, "Perfect Song", &artists, Some(180)).is_none(),
+        "thời lượng lệch hơn 15s phải bị loại outright dù tiêu đề và ca sĩ khớp hoàn hảo"
+    );
+
+    let close = vec![matching_candidate(
+        "Perfect Song",
+        "Perfect Artist - Topic",
+        Some(190.0),
+    )];
+    assert!(
+        pick_best(&close, "Perfect Song", &artists, Some(180)).is_some(),
+        "thời lượng lệch trong 15s vẫn phải được chấp nhận"
+    );
+
+    let unknown = vec![matching_candidate(
+        "Perfect Song",
+        "Perfect Artist - Topic",
+        None,
+    )];
+    assert!(
+        pick_best(&unknown, "Perfect Song", &artists, Some(180)).is_some(),
+        "không có thời lượng ứng viên thì không áp gate"
+    );
+}
+
+#[test]
+fn test_matching_title_floor_rejects_weak_similarity_with_perfect_artist_and_duration() {
+    use ghita_download::core::matching::pick_best;
+
+    let candidates = vec![matching_candidate(
+        "Den Lung Linh",
+        "Den Vau - Topic",
+        Some(180.0),
+    )];
+    let artists = vec!["Den Vau".to_string()];
+    assert!(
+        pick_best(&candidates, "Den", &artists, Some(180)).is_none(),
+        "tương đồng tiêu đề ~0.33 (dưới sàn 0.35) phải bị loại dù ca sĩ và thời lượng khớp tuyệt đối"
+    );
+}
+
+#[test]
+fn test_matching_variant_penalty_downgrades_derivative_candidates() {
+    use ghita_download::core::matching::pick_best;
+
+    let artists = vec!["Ca Si Chill".to_string()];
+    let plain = matching_candidate("Bai Hat Chill", "Ca Si Chill", Some(200.0));
+    let sped_up = matching_candidate("Bai Hat Chill (Sped Up)", "Ca Si Chill", Some(200.0));
+    let ranked = [plain, sped_up];
+    let best = pick_best(&ranked, "Bai Hat Chill", &artists, Some(200))
+        .expect("candidate gốc phải được chọn");
+    assert_eq!(
+        best.title, "Bai Hat Chill",
+        "bản gốc phải được ưu tiên hơn bản Sped Up"
+    );
+
+    let only_variant = vec![matching_candidate("Nang Am Sped Up", "Channel X", None)];
+    assert!(
+        pick_best(&only_variant, "Nang Am Xa Nguoi", &[], None).is_none(),
+        "bản biến thể bị trừ 0.2 điểm phải rơi dưới ngưỡng khi tương đồng tiêu đề ở vùng biên"
+    );
+
+    let without_variant = vec![matching_candidate("Nang Am", "Channel X", None)];
+    assert!(
+        pick_best(&without_variant, "Nang Am Xa Nguoi", &[], None).is_some(),
+        "bản không biến thể với cùng mức tương đồng phải vượt ngưỡng"
+    );
+}
+
+#[test]
+fn test_matching_live_variant_penalized_only_when_expected_lacks_live() {
+    use ghita_download::core::matching::pick_best;
+
+    let candidate = vec![matching_candidate("Nang Am Live", "Channel X", None)];
+    assert!(
+        pick_best(&candidate, "Nang Am Xa Nguoi", &[], None).is_none(),
+        "candidate thêm 'live' so với expected gốc phải bị trừ điểm và rơi dưới ngưỡng"
+    );
+    assert!(
+        pick_best(&candidate, "Nang Am Live Xa Nguoi", &[], None).is_some(),
+        "expected đã chứa 'live' thì không được trừ điểm biến thể"
+    );
+}
+
+#[test]
+fn test_decode_html_entities_handles_named_and_numeric() {
+    use ghita_download::core::spotify::decode_html_entities;
+
+    assert_eq!(decode_html_entities("Rock &amp; Roll"), "Rock & Roll");
+    assert_eq!(decode_html_entities("Tiến &lt;Lên&gt;"), "Tiến <Lên>");
+    assert_eq!(
+        decode_html_entities("quote &quot;here&quot;"),
+        "quote \"here\""
+    );
+    assert_eq!(
+        decode_html_entities("It&#39;s Life &apos;Ok&#x27;"),
+        "It's Life 'Ok'"
+    );
+    assert_eq!(decode_html_entities("CÂU&nbsp;HỎI"), "CÂU HỎI");
+    assert_eq!(decode_html_entities("số &#7896; đẹp"), "số Ộ đẹp");
+    assert_eq!(decode_html_entities("hex &#x1ED8; hoa"), "hex Ộ hoa");
+    assert_eq!(decode_html_entities("không có entity"), "không có entity");
+    assert_eq!(
+        decode_html_entities("dấu & bấm ;dư"),
+        "dấu & bấm ;dư",
+        "entity không hợp lệ phải giữ nguyên"
+    );
 }

@@ -8,7 +8,7 @@ use url::Url;
 use crate::utils::http::{shared_client, with_retry};
 
 static NEXT_DATA_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"<script id="__NEXT_DATA__" type="application/json">([^<]+)</script>"#).unwrap()
+    Regex::new(r#"<script id="__NEXT_DATA__" type="application/json">([\s\S]*?)</script>"#).unwrap()
 });
 static OG_TITLE_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r#"<meta property="og:title" content="([^"]+)""#).unwrap());
@@ -16,6 +16,60 @@ static OG_DESC_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r#"<meta property="og:description" content="([^"]+)""#).unwrap());
 static OG_IMG_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r#"<meta property="og:image" content="([^"]+)""#).unwrap());
+
+pub fn decode_html_entities(input: &str) -> String {
+    if !input.contains('&') {
+        return input.to_string();
+    }
+    let mut decoded = String::with_capacity(input.len());
+    let bytes = input.as_bytes();
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'&' {
+            if let Some(offset) = input[index..].find(';') {
+                let entity = &input[index + 1..index + offset];
+                if let Some(character) = decode_entity(entity) {
+                    decoded.push(character);
+                    index += offset + 1;
+                    continue;
+                }
+            }
+            decoded.push('&');
+            index += 1;
+        } else {
+            let character = input[index..].chars().next().unwrap_or_default();
+            decoded.push(character);
+            index += character.len_utf8();
+        }
+    }
+    decoded
+}
+
+fn decode_entity(entity: &str) -> Option<char> {
+    match entity {
+        "amp" => Some('&'),
+        "lt" => Some('<'),
+        "gt" => Some('>'),
+        "quot" => Some('"'),
+        "apos" => Some('\''),
+        "nbsp" => Some(' '),
+        other => decode_numeric_entity(other),
+    }
+}
+
+fn decode_numeric_entity(entity: &str) -> Option<char> {
+    let hex = entity
+        .strip_prefix("#x")
+        .or_else(|| entity.strip_prefix("#X"));
+    let code = match hex {
+        Some(hex) => u32::from_str_radix(hex, 16).ok()?,
+        None => {
+            let decimal = entity.strip_prefix('#')?;
+            decimal.parse::<u32>().ok()?
+        }
+    };
+    char::from_u32(code).filter(|character| !character.is_control())
+}
 
 fn artists_from_subtitle(subtitle: &str) -> Vec<String> {
     let primary = subtitle
@@ -187,10 +241,10 @@ impl SpotifyClient {
         }
 
         if let Some(caps) = OG_TITLE_RE.captures(&resp) {
-            let full_title = caps[1].to_string();
+            let full_title = decode_html_entities(&caps[1]);
             let mut artist = "Spotify Artist".to_string();
             if let Some(desc_caps) = OG_DESC_RE.captures(&resp) {
-                let desc = &desc_caps[1];
+                let desc = decode_html_entities(&desc_caps[1]);
                 if let Some(first_part) = desc.split('·').next() {
                     let a = first_part.trim();
                     if !a.is_empty() {
@@ -199,7 +253,9 @@ impl SpotifyClient {
                 }
             }
 
-            let cover_url = OG_IMG_RE.captures(&resp).map(|c| c[1].to_string());
+            let cover_url = OG_IMG_RE
+                .captures(&resp)
+                .map(|c| decode_html_entities(&c[1]));
 
             let search_query = format!("{} {} official audio", artist, full_title);
 

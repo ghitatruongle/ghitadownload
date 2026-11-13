@@ -1,5 +1,38 @@
 # Changelog
 
+## [0.0.6-preview] - 2026-11-10
+
+### Added
+- Persistent task board: each download task keeps a final status line (✓ output file / ✖ error / ⏸ cancelled) under a batch total bar (`{pos}/{len} bài · ETA`), so a finished batch stays readable; task panics no longer leave orphan progress bars.
+- Unified batch summary: the duplicate post-batch "🎉" block is gone; `CliApp::print_batch_summary` is the single summary and now reports elapsed time and total downloaded size (`BatchOutcome.elapsed_secs` / `total_bytes`).
+- Interactive retry picker: the 🔁 retry menu now lists failed tasks in an inquire `MultiSelect` with fuzzy scorer filtering, letting users tick exactly which failed songs to re-download (selection order preserved).
+- Resume in the dashboard: new "⏯ Tiếp tục batch dở dang" menu item executes `pending_tasks.json` interactively (previously headless-only), with a live badge showing the pending count; plus a "📜 Lịch sử tải gần đây" history view reading the newest `ghita_manifest_*.json` files.
+- Progress bars now show percent, ETA and bytes/s (`{percent} {eta} {bytes_per_sec}`); the Suno progress bar resets between fallback media URLs.
+- Headless FFmpeg auto-install: headless runs no longer abort when FFmpeg is missing — the app now downloads and installs it automatically.
+- Speed: input resolution is parallelized (semaphore of 6, results keep input order) so multi-link batches stop resolving one-by-one; video/Original verification uses ffprobe (fallback `ffmpeg -i` header read) instead of decoding the whole video; yt-dlp gains a no-progress watchdog (90s) and a 10-minute per-attempt wall clock; `--concurrent-fragments` raised 5 → 8; pending-state rewrite throttled from every 5 to every 15 completions.
+
+### Changed
+- yt-dlp invocations in `youtube.rs` now pass the URL/query after `--` (argument-injection hardening); the URL/query can never be parsed as yt-dlp options.
+- Search accuracy reworked: candidates whose duration differs from the expected duration by more than 15s are hard-rejected; a minimum title similarity floor (0.35) blocks weak matches that previously slipped through; derivative versions (remix/live/cover/sped up/slowed/nightcore/karaoke/instrumental) get a −0.2 penalty when the requested title lacks those tokens; when no search candidate is confident, the downloader advances to the next fallback query instead of blind-downloading the first hit (blind download is now the last resort).
+- Spotify parsing: `__NEXT_DATA__` extraction no longer truncates on `<` inside JSON; og-metadata values are HTML-entity-decoded (`&amp;`, `&#x27;`, numeric entities) before entering tags; "Spotify Artist" placeholder is ignored during matching; album/playlist fallbacks gained a second-artist query for collab tracks and dropped a byte-duplicate fallback slot.
+- Artist tags from YouTube uploads strip channel suffixes ("- Topic", "VEVO") before tagging; duration rounding uses proper rounding instead of truncation; yt-dlp error context filters `WARNING` lines so real errors surface; error log lines keep the full anyhow cause chain (`{e:#}`).
+- FFmpeg installer rewritten in pure Rust: reqwest streaming download + SHA-256 verification + `zip` crate extraction (ffmpeg.exe + ffprobe.exe) with env-override warnings — no more PowerShell `Invoke-WebRequest`/`Expand-Archive`.
+- Clipboard read in the multi-link editor replaced with `arboard` (no more PowerShell `Get-Clipboard` spawn per Ctrl+V); user-PATH updates in the installer use `winreg` directly (preserving REG_SZ/REG_EXPAND_SZ type, retrying on race, broadcasting WM_SETTINGCHANGE) instead of PowerShell.
+- Config privacy: `cookies_file`/`cookies_from_browser` are no longer serialized into `failed_tasks.json`/`pending_tasks.json` (old files with the keys still load; resumed/retried batches must re-pass `--cookies`).
+- Stability: FFmpeg install/yt-dlp update no longer block the async runtime; temp-dir sweep only removes `.ghita_temp_*` older than 30 minutes (parallel instances no longer destroy each other); HTTP retry backoff is jittered and cancellation-aware; Suno downloads stream to a `.part` file with stream-decryption in `spawn_blocking` (no more whole-file RAM buffering); yt-dlp stderr read-loop breaks on stream errors instead of busy-spinning.
+
+### Fixed
+- Duplicate fallback slot in Spotify search chains byte-identical to the primary target.
+- `read_recent_manifests` applied its limit before skipping broken manifest files, returning fewer entries than requested.
+- Search re-ranking silently never ran: `extract_playlist_items` spawned yt-dlp with manually-threaded pipe readers and yt-dlp aborted writing to that pipe (`OSError: [Errno 22]`), so every `ytsearch` target skipped ranking and fell through to a blind download of the first hit; the extraction now uses the standard `Command::output()` collector, restoring candidate re-ranking (verified live: "me at the zoo" now matches the jawed video by title score instead of blind-downloading).
+- Headless runs printed no batch summary; `--link/--file/--retry-failed/--resume` runs now print the same `KẾT QUẢ TẢI HÀNG LOẠT` block (success/failure, elapsed time, total size, retry hint) as the interactive dashboard.
+- Test-suite updates for the new matching thresholds, the temp-sweep age gate and the cookie privacy skip.
+- Review fixes: ffprobe stderr is no longer piped unread (a corrupt file's error flood could hang verification forever); the yt-dlp watchdog no longer false-positives during post-processing (Merger/ExtractAudio after "100% of"); a panic inside one resolve task now logs and skips that input instead of being silently swallowed; stale-temp-dir sweep measures the newest file mtime inside a temp dir, not just the dir mtime, so a long-running parallel instance cannot be wiped mid-download; Suno write failures (disk full) are logged and the progress bar resets to unknown length between fallback URLs; the batch Ctrl+C watcher task is aborted when the batch ends; Suno fallback decryption no longer runs blocking CPU on the async runtime; `with_retry` checks an already-cancelled token before retrying; `smoke_live.ps1 -SkipDownloads` no longer runs the multi-link download step.
+
+### Release artifact
+- `Release/ghitadownload_0.0.6-preview.exe`
+- SHA-256: `A3632A7DBCE0862E31AD50338C116E1C938A491685627788A17648A8A3EC3116`
+
 ## [0.0.5] - 2026-11-06
 
 ### Fixed

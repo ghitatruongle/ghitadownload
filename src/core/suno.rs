@@ -1,8 +1,10 @@
 use anyhow::{anyhow, Result};
+use colored::Colorize;
 use regex::Regex;
 use serde_json::Value;
 use std::sync::atomic::Ordering;
 use std::sync::LazyLock;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use crate::utils::http::{download_client, shared_client, with_retry};
 use std::time::Duration;
@@ -123,6 +125,42 @@ fn decrypt_aes_128_ctr(encrypted_data: &mut [u8], key_bytes: &[u8], iv_bytes: &[
     let mut cipher = Aes128Ctr::new(key_bytes.into(), iv_bytes.into());
     cipher.apply_keystream(encrypted_data);
     Ok(())
+}
+
+fn decrypt_part_file_stream(
+    part_path: &std::path::Path,
+    output_path: &std::path::Path,
+    key_bytes: &[u8],
+    iv_bytes: &[u8],
+) -> Result<bool> {
+    use ctr::cipher::{KeyIvInit, StreamCipher};
+    use ctr::Ctr128BE;
+    use std::io::{BufReader, Read, Write};
+    type Aes128Ctr = Ctr128BE<aes::Aes128>;
+
+    let mut cipher = Aes128Ctr::new(key_bytes.into(), iv_bytes.into());
+    let mut input = BufReader::with_capacity(65536, std::fs::File::open(part_path)?);
+    let mut output = std::io::BufWriter::new(std::fs::File::create(output_path)?);
+    let mut buffer = vec![0u8; 65536];
+    let mut header_checked = false;
+    loop {
+        let read = input.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        cipher.apply_keystream(&mut buffer[..read]);
+        if !header_checked {
+            header_checked = true;
+            if !bytes_have_media_signature(&buffer[..read]) {
+                let _ = std::fs::remove_file(output_path);
+                return Ok(false);
+            }
+        }
+        output.write_all(&buffer[..read])?;
+    }
+    output.flush()?;
+    let _ = std::fs::remove_file(part_path);
+    Ok(true)
 }
 
 fn bytes_have_media_signature(bytes: &[u8]) -> bool {
@@ -411,7 +449,7 @@ impl SunoClient {
         })
     }
 
-    pub async fn decrypt_clip_media(&self, uuid: &str, bytes: &mut [u8]) -> Result<()> {
+    async fn fetch_content_keys(&self, uuid: &str) -> Result<(Vec<u8>, Vec<u8>)> {
         use sha2::{Digest, Sha256};
 
         let client = Self::http_client()?;
@@ -453,6 +491,11 @@ impl SunoClient {
             return Err(anyhow!("Độ dài content key hoặc iv không hợp lệ"));
         }
 
+        Ok((content_key, content_iv))
+    }
+
+    pub async fn decrypt_clip_media(&self, uuid: &str, bytes: &mut [u8]) -> Result<()> {
+        let (content_key, content_iv) = self.fetch_content_keys(uuid).await?;
         decrypt_aes_128_ctr(bytes, &content_key, &content_iv)?;
         Ok(())
     }
@@ -479,6 +522,10 @@ impl SunoClient {
             }
         }
 
+        let mut part_name = output_path.as_os_str().to_os_string();
+        part_name.push(".part");
+        let part_path = std::path::PathBuf::from(part_name);
+
         for url in download_urls {
             if is_forbidden_url(&url) {
                 continue;
@@ -491,13 +538,20 @@ impl SunoClient {
 
             let total_size = resp.content_length().unwrap_or(0);
             if let Some(bar) = progress {
+                bar.reset();
                 if total_size > 0 {
                     bar.set_length(total_size);
+                } else {
+                    bar.set_length(0);
                 }
             }
 
+            let part_file = tokio::fs::File::create(&part_path).await.map_err(|error| {
+                anyhow!("Không tạo được tệp tạm {}: {error}", part_path.display())
+            })?;
+            let mut writer = tokio::io::BufWriter::new(part_file);
             let mut resp = resp;
-            let mut bytes = Vec::new();
+            let mut downloaded: u64 = 0;
             let mut download_interrupted = false;
             loop {
                 let chunk = tokio::select! {
@@ -512,12 +566,23 @@ impl SunoClient {
                         }
                     },
                     _ = cancel.changed() => {
+                        drop(writer);
+                        let _ = tokio::fs::remove_file(&part_path).await;
                         return Err(anyhow!("Đã hủy"));
                     }
                 };
                 match chunk {
                     Ok(Some(chunk)) => {
-                        bytes.extend_from_slice(&chunk);
+                        if let Err(error) = writer.write_all(&chunk).await {
+                            eprintln!(
+                                "{}",
+                                format!("  ✖ Không ghi được tệp tạm Suno (đĩa đầy?): {error}")
+                                    .red()
+                            );
+                            download_interrupted = true;
+                            break;
+                        }
+                        downloaded += chunk.len() as u64;
                         if let Some(bar) = progress {
                             bar.inc(chunk.len() as u64);
                         }
@@ -530,23 +595,59 @@ impl SunoClient {
                 }
             }
 
-            if download_interrupted || bytes.len() < 1024 {
+            let flushed = writer.flush().await.is_ok();
+            drop(writer);
+
+            if download_interrupted || !flushed || downloaded < 1024 {
+                let _ = tokio::fs::remove_file(&part_path).await;
                 continue;
             }
 
-            let is_encrypted = meta.is_encrypted || !bytes_have_media_signature(&bytes);
+            let mut header = [0u8; 16];
+            let header_len = match tokio::fs::File::open(&part_path).await {
+                Ok(mut part) => part.read(&mut header).await.unwrap_or(0),
+                Err(_) => {
+                    let _ = tokio::fs::remove_file(&part_path).await;
+                    continue;
+                }
+            };
+            let is_encrypted = meta.is_encrypted
+                || header_len < 12
+                || !bytes_have_media_signature(&header[..header_len]);
 
             if is_encrypted {
-                let mut decrypted = bytes.clone();
-                match self.decrypt_clip_media(uuid, &mut decrypted).await {
-                    Ok(()) if bytes_have_media_signature(&decrypted) => {
-                        bytes = decrypted;
+                let (content_key, content_iv) = match self.fetch_content_keys(uuid).await {
+                    Ok(keys) => keys,
+                    Err(_) => {
+                        let _ = tokio::fs::remove_file(&part_path).await;
+                        continue;
                     }
-                    _ => continue,
+                };
+                let part_for_task = part_path.clone();
+                let output_for_task = output_path.to_path_buf();
+                let decrypt_result = tokio::task::spawn_blocking(move || {
+                    decrypt_part_file_stream(
+                        &part_for_task,
+                        &output_for_task,
+                        &content_key,
+                        &content_iv,
+                    )
+                })
+                .await;
+                match decrypt_result {
+                    Ok(Ok(true)) => return Ok(()),
+                    _ => {
+                        let _ = tokio::fs::remove_file(&part_path).await;
+                        let _ = tokio::fs::remove_file(output_path).await;
+                        continue;
+                    }
                 }
             }
 
-            std::fs::write(output_path, &bytes)?;
+            if let Err(error) = tokio::fs::rename(&part_path, output_path).await {
+                let _ = tokio::fs::remove_file(&part_path).await;
+                return Err(anyhow!("Không ghi được tệp âm thanh Suno: {error}"));
+            }
             return Ok(());
         }
 

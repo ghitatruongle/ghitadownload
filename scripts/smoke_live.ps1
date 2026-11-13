@@ -4,7 +4,8 @@ param(
     [string]$DownloadUrl = "https://www.youtube.com/watch?v=jNQXAC9IVRw",
     [string]$SearchQuery = "me at the zoo",
     [switch]$SkipDownloads,
-    [switch]$KeepOutput
+    [switch]$KeepOutput,
+    [switch]$MeasureResolve
 )
 
 $ErrorActionPreference = "Stop"
@@ -46,8 +47,11 @@ if ($LASTEXITCODE -notin 0, 1) {
 
 if (!$SkipDownloads) {
     Write-Host "==> Step 3/4: download by URL ($DownloadUrl)" -ForegroundColor Cyan
+    $urlTimer = [System.Diagnostics.Stopwatch]::StartNew()
     $urlDir = Join-Path $smokeDir "by_url"
     & $BinaryPath --link $DownloadUrl --output $urlDir --format mp3 --concurrency 1
+    $urlTimer.Stop()
+    Write-Host ("    TIME: {0:N1}s" -f $urlTimer.Elapsed.TotalSeconds) -ForegroundColor Yellow
     if ($LASTEXITCODE -ne 0) {
         Write-Host "    FAIL: download exited with $LASTEXITCODE" -ForegroundColor Red
         $failed += "download-by-url"
@@ -63,8 +67,11 @@ if (!$SkipDownloads) {
     }
 
     Write-Host "==> Step 4/4: download by search ('$SearchQuery')" -ForegroundColor Cyan
+    $searchTimer = [System.Diagnostics.Stopwatch]::StartNew()
     $searchDir = Join-Path $smokeDir "by_search"
     & $BinaryPath --link $SearchQuery --output $searchDir --format mp3 --concurrency 1
+    $searchTimer.Stop()
+    Write-Host ("    TIME: {0:N1}s" -f $searchTimer.Elapsed.TotalSeconds) -ForegroundColor Yellow
     if ($LASTEXITCODE -ne 0) {
         Write-Host "    FAIL: search download exited with $LASTEXITCODE" -ForegroundColor Red
         $failed += "download-by-search"
@@ -86,6 +93,22 @@ if (!$SkipDownloads) {
     } else {
         Write-Host "    PASS: manifest(s): $($manifests.Count)" -ForegroundColor Green
     }
+}
+
+if ($MeasureResolve -and !$SkipDownloads) {
+    Write-Host "==> Step 5/5: multi-link resolve+download timing (C1)" -ForegroundColor Cyan
+    $multiTimer = [System.Diagnostics.Stopwatch]::StartNew()
+    $multiDir = Join-Path $smokeDir "multi"
+    & $BinaryPath --link "me at the zoo" "never gonna give you up" "careless whisper" --output $multiDir --format mp3 --concurrency 3
+    $multiTimer.Stop()
+    Write-Host ("    TIME: {0:N1}s for 3 search links in one batch" -f $multiTimer.Elapsed.TotalSeconds) -ForegroundColor Yellow
+    $multiFiles = @(Get-ChildItem -LiteralPath $multiDir -Filter *.mp3 -File -ErrorAction SilentlyContinue | Where-Object { $_.Length -gt 10KB })
+    if ($multiFiles.Count -lt 3) {
+        Write-Host "    FAIL: expected 3 mp3 from the multi-link batch" -ForegroundColor Red
+        $failed += "multi-resolve"
+    }
+} elseif ($MeasureResolve) {
+    Write-Host "==> Step 5/5: multi-link resolve timing SKIPPED (-SkipDownloads)" -ForegroundColor Yellow
 }
 
 Write-Host ""

@@ -1,5 +1,20 @@
-use ghita_download::core::config::{AppConfig, AudioFormat, AudioQuality};
+use ghita_download::core::config::{AppConfig, AudioFormat, AudioQuality, DownloadSettings};
 use std::path::PathBuf;
+
+fn settings_with_cookies() -> DownloadSettings {
+    DownloadSettings {
+        output_dir: PathBuf::from(r"D:\Music"),
+        format: AudioFormat::Mp3,
+        quality: Some(AudioQuality::Mp3_320k),
+        video_resolution: Some(1080),
+        concurrency: 3,
+        keep_accents: false,
+        cookies_file: Some(PathBuf::from(r"C:\private\cookies.txt")),
+        cookies_from_browser: Some("firefox".to_string()),
+        raw: false,
+        fetch_lyrics: true,
+    }
+}
 
 fn test_directory(label: &str) -> PathBuf {
     let directory = std::env::temp_dir().join(format!(
@@ -111,6 +126,61 @@ fn config_round_trip_writes_schema_version() {
     let loaded = AppConfig::try_load_from(&path).unwrap();
     assert_eq!(loaded.schema_version, 1);
     let _ = std::fs::remove_dir_all(directory);
+}
+
+#[test]
+fn serialized_settings_omit_cookie_fields() {
+    let settings = settings_with_cookies();
+    let json = serde_json::to_string(&settings).unwrap();
+    assert!(
+        !json.contains("cookies_file"),
+        "queue JSON không được chứa cookies_file: {json}"
+    );
+    assert!(
+        !json.contains("cookies_from_browser"),
+        "queue JSON không được chứa cookies_from_browser: {json}"
+    );
+    let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert!(value.get("cookies_file").is_none());
+    assert!(value.get("cookies_from_browser").is_none());
+}
+
+#[test]
+fn old_queue_json_with_cookie_fields_still_loads() {
+    let json = serde_json::json!({
+        "output_dir": r"D:\Music",
+        "format": "Mp3",
+        "quality": "Mp3_320k",
+        "video_resolution": 1080,
+        "concurrency": 3,
+        "keep_accents": false,
+        "cookies_file": r"C:\old\cookies.txt",
+        "cookies_from_browser": "chrome",
+        "raw": false,
+        "fetch_lyrics": true
+    });
+    let settings: DownloadSettings = serde_json::from_value(json).unwrap();
+    assert_eq!(settings.output_dir, PathBuf::from(r"D:\Music"));
+    assert_eq!(settings.format, AudioFormat::Mp3);
+    assert_eq!(settings.quality, Some(AudioQuality::Mp3_320k));
+    assert_eq!(settings.cookies_file, None);
+    assert_eq!(settings.cookies_from_browser, None);
+}
+
+#[test]
+fn old_queue_json_without_cookie_fields_loads_with_defaults() {
+    let json = serde_json::json!({
+        "output_dir": r"D:\Music",
+        "format": "Flac",
+        "quality": null
+    });
+    let settings: DownloadSettings = serde_json::from_value(json).unwrap();
+    assert_eq!(settings.output_dir, PathBuf::from(r"D:\Music"));
+    assert_eq!(settings.format, AudioFormat::Flac);
+    assert!(settings.quality.is_none());
+    assert_eq!(settings.cookies_file, None);
+    assert_eq!(settings.cookies_from_browser, None);
+    assert_eq!(settings.concurrency, 3);
 }
 
 #[test]

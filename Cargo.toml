@@ -1,7 +1,7 @@
 [package]
 name = "ghita_download"
-version = "0.0.5"
-edition = "2021" 
+version = "0.0.6-preview"
+edition = "2021"
 
 [[bin]]
 name = "ghitadownload"
@@ -33,6 +33,10 @@ aes-gcm = "0.10"
 ctr = "0.9"
 aes = "0.8"
 base64 = "0.22"
+arboard = "3"
+zip = { version = "2", default-features = false, features = ["deflate"] }
+winreg = "0.55"
+windows-sys = { version = "0.59", features = ["Win32_System_Registry", "Win32_UI_WindowsAndMessaging", "Win32_Foundation"] }
 
 [build-dependencies]
 sha2 = "0.10"

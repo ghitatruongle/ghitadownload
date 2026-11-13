@@ -136,11 +136,38 @@ fn stream_flags(stderr: &str) -> (bool, bool) {
     (has_audio, has_video)
 }
 
+pub fn parse_ffprobe_output(stdout: &str) -> (Option<f64>, bool, bool) {
+    let mut duration_secs: Option<f64> = None;
+    let mut has_audio = false;
+    let mut has_video = false;
+    for line in stdout.lines() {
+        if let Some(value) = line.strip_prefix("codec_type=") {
+            match value.trim() {
+                "audio" => has_audio = true,
+                "video" => has_video = true,
+                _ => {}
+            }
+        } else if let Some(value) = line.strip_prefix("duration=") {
+            if duration_secs.is_none() {
+                if let Some(secs) = value
+                    .trim()
+                    .parse::<f64>()
+                    .ok()
+                    .filter(|secs| secs.is_finite())
+                {
+                    duration_secs = Some(secs);
+                }
+            }
+        }
+    }
+    (duration_secs, has_audio, has_video)
+}
+
 pub async fn probe_media(
     path: &Path,
     ffmpeg: &Path,
     audio_only: bool,
-    mut cancel: tokio::sync::watch::Receiver<bool>,
+    cancel: tokio::sync::watch::Receiver<bool>,
 ) -> Result<MediaInfo> {
     let size_bytes = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
     if size_bytes == 0 {
@@ -148,6 +175,20 @@ pub async fn probe_media(
     }
     has_media_signature(path)?;
 
+    if audio_only {
+        probe_media_full_decode(path, ffmpeg, size_bytes, audio_only, cancel).await
+    } else {
+        probe_media_headers_only(path, ffmpeg, size_bytes, cancel).await
+    }
+}
+
+async fn probe_media_full_decode(
+    path: &Path,
+    ffmpeg: &Path,
+    size_bytes: u64,
+    audio_only: bool,
+    mut cancel: tokio::sync::watch::Receiver<bool>,
+) -> Result<MediaInfo> {
     let mut cmd = Command::new(ffmpeg);
     cmd.arg("-hide_banner").arg("-i").arg(path);
     if audio_only {
@@ -207,6 +248,115 @@ pub async fn probe_media(
         None => (None, None),
     };
 
+    Ok(MediaInfo {
+        duration_secs,
+        size_bytes,
+        has_audio,
+        has_video,
+        audio_codec,
+        audio_bitrate_kbps,
+    })
+}
+
+async fn probe_media_headers_only(
+    path: &Path,
+    ffmpeg: &Path,
+    size_bytes: u64,
+    mut cancel: tokio::sync::watch::Receiver<bool>,
+) -> Result<MediaInfo> {
+    if let Some(ffprobe) = crate::utils::env::find_ffprobe() {
+        let mut cmd = Command::new(ffprobe);
+        cmd.arg("-v")
+            .arg("error")
+            .arg("-show_entries")
+            .arg("stream=codec_type:format=duration")
+            .arg("-of")
+            .arg("default")
+            .arg(path)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null());
+        let mut child = tokio::process::Command::from(cmd)
+            .spawn()
+            .map_err(|e| anyhow!("Không thể chạy FFprobe để kiểm chứng tệp: {}", e))?;
+        let mut stdout_pipe = child
+            .stdout
+            .take()
+            .ok_or_else(|| anyhow!("Mất luồng stdout của FFprobe"))?;
+        let stdout_task = tokio::spawn(async move {
+            let mut buf = Vec::new();
+            let _ = tokio::io::AsyncReadExt::read_to_end(&mut stdout_pipe, &mut buf).await;
+            buf
+        });
+        let status = tokio::select! {
+            status = child.wait() => status
+                .map_err(|e| anyhow!("Không thể chạy FFprobe để kiểm chứng tệp: {}", e))?,
+            _ = cancel.changed() => {
+                let _ = child.kill().await;
+                stdout_task.abort();
+                return Err(anyhow!("Đã hủy"));
+            }
+        };
+        let stdout_buf = stdout_task.await.unwrap_or_default();
+        let stdout = String::from_utf8_lossy(&stdout_buf);
+        let (duration_secs, has_audio, has_video) = parse_ffprobe_output(&stdout);
+        if !status.success() || (!has_audio && !has_video) {
+            return Err(anyhow!(
+                "FFmpeg không nhận diện được tệp media hợp lệ (có thể mã hóa DRM/corrupt): {}",
+                path.display()
+            ));
+        }
+        return Ok(MediaInfo {
+            duration_secs: duration_secs.unwrap_or(-1.0),
+            size_bytes,
+            has_audio,
+            has_video,
+            audio_codec: None,
+            audio_bitrate_kbps: None,
+        });
+    }
+
+    let mut cmd = Command::new(ffmpeg);
+    cmd.arg("-hide_banner")
+        .arg("-i")
+        .arg(path)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped());
+    let mut child = tokio::process::Command::from(cmd)
+        .spawn()
+        .map_err(|e| anyhow!("Không thể chạy FFmpeg để kiểm chứng tệp: {}", e))?;
+    let mut stderr_pipe = child
+        .stderr
+        .take()
+        .ok_or_else(|| anyhow!("Mất luồng stderr của FFmpeg"))?;
+    let stderr_task = tokio::spawn(async move {
+        let mut buf = Vec::new();
+        let _ = tokio::io::AsyncReadExt::read_to_end(&mut stderr_pipe, &mut buf).await;
+        buf
+    });
+    let _status = tokio::select! {
+        status = child.wait() => status,
+        _ = cancel.changed() => {
+            let _ = child.kill().await;
+            stderr_task.abort();
+            return Err(anyhow!("Đã hủy"));
+        }
+    };
+    let stderr_buf = stderr_task.await.unwrap_or_default();
+    let stderr = String::from_utf8_lossy(&stderr_buf);
+    let (has_audio, has_video) = stream_flags(&stderr);
+    if (!has_audio && !has_video) || stderr.contains("does not contain any stream") {
+        return Err(anyhow!(
+            "FFmpeg không nhận diện được tệp media hợp lệ (có thể mã hóa DRM/corrupt): {}",
+            path.display()
+        ));
+    }
+    let duration_secs = parse_duration_secs(&stderr)?;
+    let (audio_codec, audio_bitrate_kbps) = match parse_audio_stream(&stderr) {
+        Some((codec, bitrate)) => (Some(codec), bitrate),
+        None => (None, None),
+    };
     Ok(MediaInfo {
         duration_secs,
         size_bytes,

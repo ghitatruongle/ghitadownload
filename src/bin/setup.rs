@@ -3,8 +3,10 @@ use std::ffi::OsStr;
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
+use winreg::enums::{RegType, HKEY_CURRENT_USER, KEY_READ, KEY_WRITE};
+use winreg::types::{FromRegValue, ToRegValue};
+use winreg::{RegKey, RegValue};
 
 const EMBEDDED_APP: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/embedded_app.bin"));
 const EMBEDDED_YTDLP: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/embedded_ytdlp.bin"));
@@ -294,7 +296,7 @@ fn handle_install(default_dir: &Path, args: &SetupArgs) -> Result<(), String> {
         .or_else(ghita_download::utils::env::find_ffmpeg)
         .is_some();
     if !ffmpeg_exists {
-        match ghita_download::utils::env::install_ffmpeg_auto() {
+        match install_ffmpeg_blocking() {
             Ok(source) if source != ffmpeg_path => {
                 copy_required_file(&source, &ffmpeg_path)?;
             }
@@ -468,60 +470,93 @@ fn find_local_ytdlp() -> Option<PathBuf> {
         .find(|path| path.is_file())
 }
 
-fn powershell_path() -> Result<PathBuf, String> {
-    ghita_download::utils::env::find_command("powershell")
-        .or_else(|| {
-            std::env::var_os("SystemRoot").map(|root| {
-                PathBuf::from(root)
-                    .join("System32")
-                    .join("WindowsPowerShell")
-                    .join("v1.0")
-                    .join("powershell.exe")
-            })
-        })
-        .filter(|path| path.is_absolute() && path.is_file())
-        .ok_or_else(|| "Không tìm thấy PowerShell".to_string())
+fn install_ffmpeg_blocking() -> Result<PathBuf, String> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| format!("Không khởi tạo được runtime tải FFmpeg: {error}"))?;
+    runtime
+        .block_on(ghita_download::utils::env::install_ffmpeg_auto())
+        .map_err(|error| error.to_string())
 }
 
-fn read_user_path() -> Result<Option<String>, String> {
-    let output = Command::new(powershell_path()?)
-        .args([
-            "-NoProfile",
-            "-NonInteractive",
-            "-Command",
-            "[Environment]::GetEnvironmentVariable('Path', 'User')",
-        ])
-        .output()
-        .map_err(|error| format!("Không đọc PATH người dùng: {error}"))?;
-    if !output.status.success() {
-        return Err(format!(
-            "Không đọc PATH người dùng (status {})",
-            output.status
-        ));
-    }
-    Ok(String::from_utf8(output.stdout)
-        .ok()
-        .map(|value| value.trim().to_string()))
+fn open_user_environment_key() -> Result<RegKey, String> {
+    RegKey::predef(HKEY_CURRENT_USER)
+        .open_subkey_with_flags("Environment", KEY_READ | KEY_WRITE)
+        .map_err(|error| format!("Không mở được registry HKCU\\Environment: {error}"))
 }
 
-fn set_user_path(value: &str) -> Result<(), String> {
-    let escaped = value.replace('\'', "''");
-    let script = format!(
-        "[Environment]::SetEnvironmentVariable('Path', '{}', 'User')",
-        escaped
-    );
-    let output = Command::new(powershell_path()?)
-        .args(["-NoProfile", "-NonInteractive", "-Command", &script])
-        .output()
-        .map_err(|error| format!("Không cập nhật PATH người dùng: {error}"))?;
-    if output.status.success() {
-        Ok(())
-    } else {
-        Err(format!(
-            "Không cập nhật PATH người dùng (status {})",
-            output.status
-        ))
+fn read_user_path_value(key: &RegKey) -> Result<(Option<RegValue>, String), String> {
+    match key.get_raw_value("Path") {
+        Ok(value) => {
+            if matches!(value.vtype, RegType::REG_SZ | RegType::REG_EXPAND_SZ) {
+                let text = String::from_reg_value(&value)
+                    .map_err(|error| format!("Không giải mã được PATH người dùng: {error}"))?;
+                Ok((Some(value), text))
+            } else {
+                Err("PATH người dùng có kiểu registry không hỗ trợ".to_string())
+            }
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok((None, String::new())),
+        Err(error) => Err(format!("Không đọc PATH người dùng: {error}")),
     }
+}
+
+fn make_user_path_value(text: &str, value_type: RegType) -> RegValue {
+    let mut value = text.to_reg_value();
+    value.vtype = value_type;
+    value
+}
+
+fn broadcast_environment_change() {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        SendMessageTimeoutW, HWND_BROADCAST, SMTO_ABORTIFHUNG, WM_SETTINGCHANGE,
+    };
+    let parameter: Vec<u16> = "Environment\0".encode_utf16().collect();
+    unsafe {
+        SendMessageTimeoutW(
+            HWND_BROADCAST,
+            WM_SETTINGCHANGE,
+            0,
+            parameter.as_ptr() as _,
+            SMTO_ABORTIFHUNG,
+            1000,
+            std::ptr::null_mut(),
+        );
+    }
+}
+
+fn try_update_user_path<F>(transform: &F) -> Result<bool, String>
+where
+    F: Fn(&str) -> Option<String>,
+{
+    let key = open_user_environment_key()?;
+    let (existing, current) = read_user_path_value(&key)?;
+    let Some(updated) = transform(&current) else {
+        return Ok(false);
+    };
+    let value_type = match &existing {
+        Some(value) if matches!(value.vtype, RegType::REG_SZ) => RegType::REG_SZ,
+        _ => RegType::REG_EXPAND_SZ,
+    };
+    key.set_raw_value("Path", &make_user_path_value(&updated, value_type))
+        .map_err(|error| format!("Không ghi PATH người dùng: {error}"))?;
+    broadcast_environment_change();
+    Ok(true)
+}
+
+fn update_user_path<F>(transform: F) -> Result<bool, String>
+where
+    F: Fn(&str) -> Option<String>,
+{
+    let mut last_error: Option<String> = None;
+    for _ in 0..3 {
+        match try_update_user_path(&transform) {
+            Ok(changed) => return Ok(changed),
+            Err(error) => last_error = Some(error),
+        }
+    }
+    Err(last_error.unwrap_or_else(|| "Không cập nhật được PATH người dùng".to_string()))
 }
 
 fn normalize_path_entry(entry: &str) -> String {
@@ -533,29 +568,23 @@ fn normalize_path_entry(entry: &str) -> String {
         .to_ascii_lowercase()
 }
 
-fn add_to_user_path(dir: &Path) -> Result<bool, String> {
-    let dir_str = dir.to_str().ok_or("Đường dẫn cài đặt không hợp lệ")?;
-    let current = read_user_path()?.ok_or("Không đọc được PATH người dùng")?;
+fn path_entry_present(current: &str, dir_str: &str) -> bool {
     let target = normalize_path_entry(dir_str);
-    if current
-        .split(';')
-        .any(|part| normalize_path_entry(part) == target && !normalize_path_entry(part).is_empty())
-    {
-        return Ok(false);
-    }
-    let updated = if current.trim().is_empty() {
+    current.split(';').any(|part| {
+        let normalized = normalize_path_entry(part);
+        !normalized.is_empty() && normalized == target
+    })
+}
+
+fn append_path_entry(current: &str, dir_str: &str) -> String {
+    if current.trim().is_empty() {
         dir_str.to_string()
     } else {
         format!("{};{}", current.trim_end_matches(';'), dir_str)
-    };
-    set_user_path(&updated)?;
-    Ok(true)
+    }
 }
 
-fn remove_from_user_path(dir: &Path) -> Result<(), String> {
-    let dir_str = dir.to_str().ok_or("Đường dẫn cài đặt không hợp lệ")?;
-    let current =
-        read_user_path()?.ok_or("Không đọc được PATH người dùng; PATH không được ghi đè")?;
+fn remove_path_entry(current: &str, dir_str: &str) -> Option<String> {
     let target = normalize_path_entry(dir_str);
     let updated = current
         .split(';')
@@ -563,17 +592,31 @@ fn remove_from_user_path(dir: &Path) -> Result<(), String> {
         .filter(|part| !part.is_empty() && normalize_path_entry(part) != target)
         .collect::<Vec<_>>()
         .join(";");
-    if updated != current {
-        set_user_path(&updated)?;
-    }
-    Ok(())
+    (updated != current).then_some(updated)
+}
+
+fn add_to_user_path(dir: &Path) -> Result<bool, String> {
+    let dir_str = dir.to_str().ok_or("Đường dẫn cài đặt không hợp lệ")?;
+    update_user_path(|current| {
+        if path_entry_present(current, dir_str) {
+            None
+        } else {
+            Some(append_path_entry(current, dir_str))
+        }
+    })
+}
+
+fn remove_from_user_path(dir: &Path) -> Result<(), String> {
+    let dir_str = dir.to_str().ok_or("Đường dẫn cài đặt không hợp lệ")?;
+    update_user_path(|current| remove_path_entry(current, dir_str)).map(|_| ())
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        build_uninstall_script, normalize_path_entry, parse_args, uninstall_config_names,
-        validate_install_dir, write_atomic,
+        append_path_entry, build_uninstall_script, normalize_path_entry, parse_args,
+        path_entry_present, remove_path_entry, uninstall_config_names, validate_install_dir,
+        write_atomic,
     };
     use std::path::{Path, PathBuf};
 
@@ -655,6 +698,31 @@ mod tests {
             normalize_path_entry(r"C:\Apps\Ghita"),
             r"c:\apps\ghita".to_string()
         );
+    }
+
+    #[test]
+    fn user_path_add_and_remove_are_idempotent() {
+        let dir = r"C:\Apps\Ghita";
+        let add_once = |current: &str| -> Option<String> {
+            if path_entry_present(current, dir) {
+                None
+            } else {
+                Some(append_path_entry(current, dir))
+            }
+        };
+        let once = add_once("").unwrap();
+        assert_eq!(once, r"C:\Apps\Ghita");
+        assert!(add_once(&once).is_none());
+        assert!(path_entry_present(&once, r"c:/apps/ghita/"));
+        assert!(path_entry_present(
+            &format!("C:\\Other;{}", once),
+            r"C:\Apps\Ghita"
+        ));
+        let removed = remove_path_entry(&format!("C:\\Other;{}", once), dir).unwrap();
+        assert_eq!(removed, r"C:\Other");
+        assert!(remove_path_entry(&once, dir).unwrap().is_empty());
+        assert!(remove_path_entry(&once, dir).is_some());
+        assert!(remove_path_entry("", dir).is_none());
     }
 
     #[test]

@@ -57,14 +57,30 @@ where
     F: FnMut() -> Fut,
     Fut: std::future::Future<Output = Result<T>>,
 {
+    let cancellation = crate::core::cancel::global();
+    let mut cancel = cancellation.subscribe();
+    if *cancel.borrow() {
+        return Err(anyhow::anyhow!("Đã hủy"));
+    }
     let mut attempt = 0u8;
     loop {
         match op().await {
             Ok(value) => return Ok(value),
             Err(err) => {
                 if attempt < 2 && is_retryable_error(&err) {
-                    let delay_ms = if attempt == 0 { 500 } else { 1500 };
-                    tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+                    let base_ms: u64 = if attempt == 0 { 500 } else { 1500 };
+                    let jitter_ms = (std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_nanos()
+                        % 250) as u64;
+                    let delay_ms = base_ms.saturating_add(jitter_ms);
+                    tokio::select! {
+                        _ = tokio::time::sleep(Duration::from_millis(delay_ms)) => {}
+                        _ = cancel.changed() => {
+                            return Err(anyhow::anyhow!("Đã hủy"));
+                        }
+                    }
                     attempt += 1;
                 } else {
                     return Err(err);

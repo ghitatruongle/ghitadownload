@@ -20,6 +20,15 @@ static SUNO_UUID_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
     regex::Regex::new(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}").unwrap()
 });
 
+static TASK_BAR_STYLE: LazyLock<ProgressStyle> = LazyLock::new(|| {
+    ProgressStyle::default_bar()
+        .template(
+            "{wide_bar:.cyan/blue} {percent:>3}% {eta:>8} {bytes:>12}/{total_bytes:>12} {bytes_per_sec:>10} {msg}",
+        )
+        .unwrap()
+        .progress_chars("=>-")
+});
+
 pub(super) struct TaskContext {
     pub(super) settings: Arc<DownloadSettings>,
     pub(super) ytdlp: Arc<PathBuf>,
@@ -50,15 +59,11 @@ pub(super) async fn process_task(
         cancel,
     } = ctx;
 
-    handle.set_style(
-        ProgressStyle::default_bar()
-            .template("{wide_bar:.cyan/blue} {bytes:>12}/{total_bytes:>12} {msg}")
-            .unwrap()
-            .progress_chars("=>-"),
-    );
+    handle.set_style(TASK_BAR_STYLE.clone());
     handle.set_message(format!("[{}/{}] chờ tới lượt", index + 1, total));
 
     let mut logs: Vec<String> = Vec::new();
+    let mut last_error: Option<String> = None;
     let mut targets = vec![task.source_or_search.clone()];
     targets.extend(task.fallback_searches.iter().cloned());
 
@@ -88,7 +93,7 @@ pub(super) async fn process_task(
 
     for (attempt_idx, target) in targets.iter().enumerate() {
         if cancel.is_cancelled() {
-            handle.finish_and_clear();
+            handle.finish_with_message("⏸ đã hủy");
             logs.push(format!("    {} {}", "✖".red(), "Đã hủy tải"));
             return TaskOutcome {
                 ok: false,
@@ -97,6 +102,7 @@ pub(super) async fn process_task(
                 task,
                 task_index: index,
                 source_note: None,
+                produced_bytes: 0,
             };
         }
         let label = if attempt_idx == 0 {
@@ -132,7 +138,7 @@ pub(super) async fn process_task(
                     logs.push(format!(
                         "    {} {}",
                         "✖".red(),
-                        e.to_string().replace(['\r', '\n'], " ").trim()
+                        format!("{e:#}").replace(['\r', '\n'], " ").trim()
                     ));
                     continue;
                 }
@@ -163,13 +169,28 @@ pub(super) async fn process_task(
                     search_cache.insert(query, picked.clone());
                     picked
                 };
-                if let Some((picked_url, picked_title)) = picked {
-                    logs.push(format!(
-                        "    {} Khớp bài: chọn kết quả tốt nhất: {}",
-                        "🎯".cyan(),
-                        picked_title
-                    ));
-                    tgt = picked_url;
+                match picked {
+                    Some((picked_url, picked_title)) => {
+                        logs.push(format!(
+                            "    {} Khớp bài: chọn kết quả tốt nhất: {}",
+                            "🎯".cyan(),
+                            picked_title
+                        ));
+                        tgt = picked_url;
+                    }
+                    None => {
+                        if attempt_idx + 1 < targets.len() {
+                            logs.push(format!(
+                                "    {} Không tìm thấy kết quả khớp cho truy vấn tìm kiếm, thử phương án dự phòng tiếp theo...",
+                                "⚠".yellow()
+                            ));
+                            continue;
+                        }
+                        logs.push(format!(
+                            "    {} Không tìm thấy kết quả khớp cho truy vấn tìm kiếm, tải trực tiếp như phương án cuối cùng...",
+                            "⚠".yellow()
+                        ));
+                    }
                 }
             }
             let bar = handle.clone();
@@ -189,10 +210,10 @@ pub(super) async fn process_task(
                     logs.push(format!(
                         "    {} {}",
                         "✖".red(),
-                        e.to_string().replace(['\r', '\n'], " ").trim()
+                        format!("{e:#}").replace(['\r', '\n'], " ").trim()
                     ));
                     if cancel.is_cancelled() {
-                        handle.finish_and_clear();
+                        handle.finish_with_message("⏸ đã hủy");
                         logs.push(format!("    {} {}", "✖".red(), "Đã hủy tải"));
                         return TaskOutcome {
                             ok: false,
@@ -201,6 +222,7 @@ pub(super) async fn process_task(
                             task,
                             task_index: index,
                             source_note: None,
+                            produced_bytes: 0,
                         };
                     }
                     continue;
@@ -209,7 +231,7 @@ pub(super) async fn process_task(
         };
 
         if cancel.is_cancelled() {
-            handle.finish_and_clear();
+            handle.finish_with_message("⏸ đã hủy");
             logs.push(format!("    {} {}", "✖".red(), "Đã hủy tải"));
             let _ = std::fs::remove_file(&path);
             return TaskOutcome {
@@ -219,6 +241,7 @@ pub(super) async fn process_task(
                 task,
                 task_index: index,
                 source_note: None,
+                produced_bytes: 0,
             };
         }
 
@@ -239,9 +262,18 @@ pub(super) async fn process_task(
             let suno_re = &*SUNO_UUID_RE;
             if let Some(caps) = suno_re.captures(filename) {
                 let uuid = caps[0].to_string();
-                if let Ok(mut bytes) = tokio::fs::read(&probe_path).await {
+                if let Ok(bytes) = tokio::fs::read(&probe_path).await {
                     let s_client = SunoClient::new();
-                    if s_client.decrypt_clip_media(&uuid, &mut bytes).await.is_ok() {
+                    let runtime_handle = tokio::runtime::Handle::current();
+                    let decrypt_result = tokio::task::spawn_blocking(move || {
+                        runtime_handle.block_on(async {
+                            let mut bytes = bytes;
+                            let ok = s_client.decrypt_clip_media(&uuid, &mut bytes).await.is_ok();
+                            (ok, bytes)
+                        })
+                    })
+                    .await;
+                    if let Ok((true, bytes)) = decrypt_result {
                         let _ = tokio::fs::write(&probe_path, &bytes).await;
                     }
                 }
@@ -300,7 +332,7 @@ pub(super) async fn process_task(
                 logs.push(format!(
                     "    {} Tệp không đạt kiểm chứng: {}",
                     "✖".red(),
-                    e.to_string().replace(['\r', '\n'], " ").trim()
+                    format!("{e:#}").replace(['\r', '\n'], " ").trim()
                 ));
             }
         }
@@ -309,7 +341,7 @@ pub(super) async fn process_task(
     let temp_file = match downloaded {
         Some(f) => f,
         None => {
-            handle.finish_and_clear();
+            handle.finish_with_message(format!("✖ thất bại sau {} phương án tải", targets.len()));
             logs.push(format!(
                 "    {} {} thất bại sau {} phương án tải",
                 "✖".red(),
@@ -323,23 +355,19 @@ pub(super) async fn process_task(
                 task,
                 task_index: index,
                 source_note: None,
+                produced_bytes: 0,
             };
         }
     };
 
     let fmt = settings.format;
     let ext = match fmt {
-        AudioFormat::Mp3 => "mp3".to_string(),
-        AudioFormat::Wav => "wav".to_string(),
-        AudioFormat::Flac => "flac".to_string(),
-        AudioFormat::Aac => "m4a".to_string(),
-        AudioFormat::Opus => "opus".to_string(),
-        AudioFormat::Video => "mp4".to_string(),
         AudioFormat::Original => temp_file
             .extension()
             .and_then(|e| e.to_str())
             .map(|s| s.to_ascii_lowercase())
             .unwrap_or_else(|| "m4a".to_string()),
+        fmt => fmt.file_extension().to_string(),
     };
     let formatted_title = if let Some(num) = task.metadata.track_number {
         if task.metadata.total_tracks.unwrap_or(0) > 1 {
@@ -358,12 +386,10 @@ pub(super) async fn process_task(
     ) {
         Ok(path) => path,
         Err(e) => {
-            handle.finish_and_clear();
-            logs.push(format!(
-                "    {} {}",
-                "✖".red(),
-                e.to_string().replace(['\r', '\n'], " ").trim()
-            ));
+            let text = format!("{e:#}").replace(['\r', '\n'], " ");
+            let short: String = text.trim().chars().take(60).collect();
+            handle.finish_with_message(format!("✖ {short}"));
+            logs.push(format!("    {} {}", "✖".red(), text.trim()));
             return TaskOutcome {
                 ok: false,
                 cancelled: false,
@@ -371,6 +397,7 @@ pub(super) async fn process_task(
                 task,
                 task_index: index,
                 source_note: None,
+                produced_bytes: 0,
             };
         }
     };
@@ -441,7 +468,9 @@ pub(super) async fn process_task(
     match tr_res {
         Ok(()) => {}
         Err(e) => {
-            logs.push(format!("    {} Xử lý tệp thất bại: {}", "✖".red(), e));
+            let text = format!("{e:#}");
+            last_error = Some(text.clone());
+            logs.push(format!("    {} Xử lý tệp thất bại: {text}", "✖".red()));
             ok = false;
         }
     }
@@ -475,21 +504,33 @@ pub(super) async fn process_task(
                 logs.push(format!(
                     "    {} Lấy lời bài hát bỏ qua: {}",
                     "ℹ".yellow(),
-                    e.to_string().replace(['\r', '\n'], " ").trim()
+                    format!("{e:#}").replace(['\r', '\n'], " ").trim()
                 ));
             }
         }
     }
 
     if ok && fmt == AudioFormat::Mp3 {
-        match tagger.tag_mp3(&final_path, &task.metadata).await {
+        let tag_input = final_path.clone();
+        let tag_meta = task.metadata.clone();
+        let tag_tagger = tagger.clone();
+        let runtime_handle = tokio::runtime::Handle::current();
+        let tag_res = tokio::task::spawn_blocking(move || {
+            runtime_handle.block_on(tag_tagger.tag_mp3(&tag_input, &tag_meta))
+        })
+        .await
+        .map_err(|error| anyhow!("Tác vụ ghi metadata bị ngắt: {error}"))
+        .and_then(|inner| inner);
+        match tag_res {
             Ok(_) => logs.push(format!(
                 "    {} {}",
                 "🏷".magenta(),
                 "Nhúng ID3 & ảnh bìa: Xong".green()
             )),
             Err(e) => {
-                logs.push(format!("    {} Ghi metadata thất bại: {}", "✖".red(), e));
+                let text = format!("{e:#}");
+                last_error = Some(text.clone());
+                logs.push(format!("    {} Ghi metadata thất bại: {text}", "✖".red()));
                 ok = false;
             }
         }
@@ -500,7 +541,7 @@ pub(super) async fn process_task(
             Ok(Some(cover)) => Some(cover),
             Ok(None) => None,
             Err(e) => {
-                logs.push(format!("    {} Tải ảnh bìa thất bại: {}", "✖".red(), e));
+                logs.push(format!("    {} Tải ảnh bìa thất bại: {e:#}", "✖".red()));
                 None
             }
         };
@@ -551,9 +592,8 @@ pub(super) async fn process_task(
             }
             Ok(_) => {}
             Err(e) => logs.push(format!(
-                "    {} Nhúng ảnh bìa/lời thất bại: {}",
-                "✖".red(),
-                e
+                "    {} Nhúng ảnh bìa/lời thất bại: {e:#}",
+                "✖".red()
             )),
         }
         if let Some(cover) = cover_path {
@@ -584,9 +624,8 @@ pub(super) async fn process_task(
                 )),
             },
             Err(e) => logs.push(format!(
-                "    {} Nhúng lời bài hát thất bại: {}",
-                "✖".red(),
-                e
+                "    {} Nhúng lời bài hát thất bại: {e:#}",
+                "✖".red()
             )),
         }
     }
@@ -599,7 +638,7 @@ pub(super) async fn process_task(
                     "🎵".magenta(),
                     path.display().to_string().bright_white()
                 )),
-                Err(e) => logs.push(format!("    {} Ghi tệp .lrc thất bại: {}", "✖".red(), e)),
+                Err(e) => logs.push(format!("    {} Ghi tệp .lrc thất bại: {e:#}", "✖".red())),
             }
         }
         logs.push(format!(
@@ -615,7 +654,27 @@ pub(super) async fn process_task(
         let _ = std::fs::remove_file(&final_path);
     }
 
-    handle.finish_and_clear();
+    let produced_bytes = if ok {
+        std::fs::metadata(&final_path)
+            .map(|meta| meta.len())
+            .unwrap_or(0)
+    } else {
+        0
+    };
+
+    if ok {
+        let name = final_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .map(|n| n.to_string())
+            .unwrap_or_else(|| "hoàn tất".to_string());
+        handle.finish_with_message(format!("✓ {name}"));
+    } else {
+        let text = last_error.unwrap_or_else(|| "tác vụ thất bại".to_string());
+        let short: String = text.chars().take(60).collect();
+        handle.finish_with_message(format!("✖ {short}"));
+    }
+
     TaskOutcome {
         ok,
         cancelled: false,
@@ -623,6 +682,7 @@ pub(super) async fn process_task(
         task,
         task_index: index,
         source_note,
+        produced_bytes,
     }
 }
 

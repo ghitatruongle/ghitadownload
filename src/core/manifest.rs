@@ -86,6 +86,97 @@ pub fn write_manifest(
     Ok(path)
 }
 
+#[derive(Debug, Clone)]
+pub struct RecentManifest {
+    pub timestamp_label: String,
+    pub success_count: usize,
+    pub failed_count: usize,
+    pub format: String,
+    pub output_dir: String,
+    pub path: String,
+}
+
+#[derive(Default, serde::Deserialize)]
+struct ManifestSnapshot {
+    #[serde(default)]
+    generated_at: String,
+    #[serde(default)]
+    success_count: usize,
+    #[serde(default)]
+    failed_count: usize,
+    #[serde(default)]
+    settings: ManifestSnapshotSettings,
+}
+
+#[derive(Default, serde::Deserialize)]
+struct ManifestSnapshotSettings {
+    #[serde(default)]
+    format: String,
+    #[serde(default)]
+    output_dir: String,
+}
+
+pub fn read_recent_manifests(output_dir: &Path, limit: usize) -> Vec<RecentManifest> {
+    let mut candidates: Vec<(String, PathBuf)> = std::fs::read_dir(output_dir)
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| entry.ok())
+        .filter_map(|entry| {
+            let path = entry.path();
+            if !path.is_file() {
+                return None;
+            }
+            let name = path.file_name()?.to_string_lossy().to_string();
+            let stem = name.strip_suffix(".json")?.to_string();
+            if stem.starts_with("ghita_manifest_") {
+                Some((stem, path))
+            } else {
+                None
+            }
+        })
+        .collect();
+    candidates.sort_by(|a, b| b.0.cmp(&a.0));
+
+    candidates
+        .into_iter()
+        .filter_map(|(stem, path)| {
+            let content = std::fs::read_to_string(&path).ok()?;
+            let snapshot: ManifestSnapshot = serde_json::from_str(&content).ok()?;
+            Some(RecentManifest {
+                timestamp_label: format_timestamp_label(&stem, &snapshot.generated_at),
+                success_count: snapshot.success_count,
+                failed_count: snapshot.failed_count,
+                format: snapshot.settings.format,
+                output_dir: snapshot.settings.output_dir,
+                path: path.to_string_lossy().to_string(),
+            })
+        })
+        .take(limit)
+        .collect()
+}
+
+fn format_timestamp_label(stem: &str, generated_at: &str) -> String {
+    if let Some(stamp) = stem.strip_prefix("ghita_manifest_") {
+        let compact: String = stamp.chars().filter(|c| c.is_ascii_digit()).collect();
+        if compact.len() >= 14 {
+            return format!(
+                "{}-{}-{} {}:{}:{}",
+                &compact[0..4],
+                &compact[4..6],
+                &compact[6..8],
+                &compact[8..10],
+                &compact[10..12],
+                &compact[12..14]
+            );
+        }
+    }
+    generated_at
+        .trim_end_matches('Z')
+        .replace('T', " ")
+        .trim()
+        .to_string()
+}
+
 fn utc_parts(secs: u64) -> (i64, u64, u64, u64, u64, u64) {
     let days = (secs / 86_400) as i64;
     let rem = secs % 86_400;
@@ -105,4 +196,103 @@ fn utc_parts(secs: u64) -> (i64, u64, u64, u64, u64, u64) {
     let year = if month <= 2 { y + 1 } else { y };
 
     (year, month, day, hour, minute, second)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::read_recent_manifests;
+    use std::path::{Path, PathBuf};
+
+    fn temp_test_dir(label: &str) -> PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "ghita_manifest_test_{}_{}_{}",
+            label,
+            std::process::id(),
+            nanos
+        ))
+    }
+
+    fn write_manifest_file(dir: &Path, stamp: &str, success: usize, failed: usize) {
+        std::fs::create_dir_all(dir).unwrap();
+        let doc = serde_json::json!({
+            "version": "test",
+            "generated_at": format!("{}T00:00:00Z", &stamp.replace('_', "-")),
+            "settings": {
+                "format": "MP3 (.mp3) - Tương thích mọi thiết bị, dung lượng nhỏ gọn",
+                "quality": null,
+                "output_dir": dir.display().to_string(),
+                "concurrency": 3
+            },
+            "success_count": success,
+            "failed_count": failed,
+            "results": []
+        });
+        std::fs::write(
+            dir.join(format!("ghita_manifest_{}.json", stamp)),
+            serde_json::to_vec_pretty(&doc).unwrap(),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn read_recent_manifests_sorts_by_name_desc_and_limits() {
+        let dir = temp_test_dir("sort_limit");
+        write_manifest_file(&dir, "20260101_000001", 1, 0);
+        write_manifest_file(&dir, "20260101_000002", 2, 1);
+        write_manifest_file(&dir, "20260101_000003", 3, 2);
+        std::fs::write(
+            dir.join("ghita_manifest_20260101_000004.json"),
+            b"{broken json",
+        )
+        .unwrap();
+
+        let recent = read_recent_manifests(&dir, 8);
+        assert_eq!(recent.len(), 3);
+        assert_eq!(recent[0].timestamp_label, "2026-01-01 00:00:03");
+        assert_eq!(recent[0].success_count, 3);
+        assert_eq!(recent[0].failed_count, 2);
+        assert_eq!(recent[1].success_count, 2);
+        assert_eq!(recent[2].success_count, 1);
+        assert!(recent[0]
+            .path
+            .ends_with("ghita_manifest_20260101_000003.json"));
+        assert!(recent[0].path.contains(&dir.display().to_string()));
+
+        let limited = read_recent_manifests(&dir, 2);
+        assert_eq!(limited.len(), 2);
+        assert_eq!(limited[0].timestamp_label, "2026-01-01 00:00:03");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn read_recent_manifests_tolerates_partial_fields() {
+        let dir = temp_test_dir("partial");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("ghita_manifest_20260101_000009.json"),
+            b"{\"success_count\": 4}",
+        )
+        .unwrap();
+
+        let recent = read_recent_manifests(&dir, 8);
+        assert_eq!(recent.len(), 1);
+        assert_eq!(recent[0].success_count, 4);
+        assert_eq!(recent[0].failed_count, 0);
+        assert_eq!(recent[0].timestamp_label, "2026-01-01 00:00:09");
+        assert!(recent[0].format.is_empty());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn read_recent_manifests_handles_missing_dir() {
+        let dir = temp_test_dir("missing");
+        let recent = read_recent_manifests(&dir, 8);
+        assert!(recent.is_empty());
+    }
 }

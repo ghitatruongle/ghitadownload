@@ -1,12 +1,22 @@
 const MIN_CANDIDATE_SCORE: f64 = 0.5;
-const MIN_TITLE_SIMILARITY: f64 = 0.3;
+const MIN_TITLE_SIMILARITY: f64 = 0.35;
 const AUTHORITATIVE_BONUS: f64 = 0.05;
 
 const TITLE_WEIGHT: f64 = 0.5;
 const ARTIST_WEIGHT: f64 = 0.2;
 const DURATION_WEIGHT: f64 = 0.3;
 
-const PLACEHOLDER_ARTISTS: &[&str] = &["raw", "search", "direct", "youtube", "spotify"];
+const MAX_DURATION_DIFF_SECS: f64 = 15.0;
+const VARIANT_PENALTY: f64 = 0.2;
+
+const PLACEHOLDER_ARTISTS: &[&str] = &[
+    "raw",
+    "search",
+    "direct",
+    "youtube",
+    "spotify",
+    "spotify artist",
+];
 
 const NOISE_PHRASES: &[&str] = &[
     "official music video",
@@ -17,6 +27,7 @@ const NOISE_PHRASES: &[&str] = &[
     "lyrics video",
     "lyric video",
     "official visualizer",
+    "sped up",
 ];
 
 const NOISE_TOKENS: &[&str] = &[
@@ -33,6 +44,24 @@ const NOISE_TOKENS: &[&str] = &[
     "feat",
     "ft",
     "featuring",
+    "remix",
+    "live",
+    "cover",
+    "slowed",
+    "nightcore",
+    "karaoke",
+    "instrumental",
+];
+
+const VARIANT_TOKENS: &[&str] = &[
+    "remix",
+    "live",
+    "cover",
+    "sped",
+    "slowed",
+    "nightcore",
+    "karaoke",
+    "instrumental",
 ];
 
 pub struct SearchCandidate {
@@ -74,6 +103,9 @@ fn score_candidate(
     artists: &[&str],
     expected_duration_secs: Option<u64>,
 ) -> f64 {
+    if is_duration_out_of_range(candidate.duration_secs, expected_duration_secs) {
+        return 0.0;
+    }
     let title_similarity = title_similarity(&candidate.title, expected_title, artists);
     if title_similarity < MIN_TITLE_SIMILARITY {
         return 0.0;
@@ -98,11 +130,36 @@ fn score_candidate(
     if total_weight <= 0.0 {
         return 0.0;
     }
-    let score = weighted / total_weight;
+    let penalty = variant_penalty(&candidate.title, expected_title);
+    let score = (weighted / total_weight - penalty).max(0.0);
     if is_authoritative_uploader(&candidate.uploader) {
         (score + AUTHORITATIVE_BONUS).min(1.0)
     } else {
         score
+    }
+}
+
+fn is_duration_out_of_range(candidate_secs: Option<f64>, expected_secs: Option<u64>) -> bool {
+    let Some(expected) = expected_secs else {
+        return false;
+    };
+    let Some(candidate) = candidate_secs else {
+        return false;
+    };
+    expected > 0 && candidate > 0.0 && (candidate - expected as f64).abs() > MAX_DURATION_DIFF_SECS
+}
+
+fn variant_penalty(candidate_title: &str, expected_title: &str) -> f64 {
+    let candidate_tokens = tokenize(candidate_title);
+    let expected_tokens = tokenize(expected_title);
+    let has_variant = VARIANT_TOKENS.iter().any(|token| {
+        candidate_tokens.iter().any(|candidate| candidate == token)
+            && !expected_tokens.iter().any(|expected| expected == token)
+    });
+    if has_variant {
+        VARIANT_PENALTY
+    } else {
+        0.0
     }
 }
 
@@ -307,6 +364,45 @@ fn is_noise_token(token: &str) -> bool {
 fn is_placeholder_artist(artist: &str) -> bool {
     let normalized = normalize_text(artist);
     normalized.is_empty() || PLACEHOLDER_ARTISTS.contains(&normalized.as_str())
+}
+
+pub fn strip_channel_suffix(name: &str) -> String {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    let without_topic = trim_dash_tail(trimmed, "topic");
+    let without_topic_vevo = trim_dash_tail(&without_topic, "vevo");
+    strip_trailing_word(&without_topic_vevo, "vevo")
+}
+
+fn trim_dash_tail(name: &str, tail_word: &str) -> String {
+    if let Some(position) = name.rfind(" - ") {
+        let tail = name[position + 3..].trim();
+        if tail.eq_ignore_ascii_case(tail_word) {
+            return name[..position].trim().to_string();
+        }
+    }
+    name.to_string()
+}
+
+fn strip_trailing_word(name: &str, word: &str) -> String {
+    let trimmed = name.trim_end();
+    let word_chars = word.chars().count();
+    let total_chars = trimmed.chars().count();
+    if total_chars > word_chars {
+        let split_at = total_chars - word_chars;
+        let tail: String = trimmed.chars().skip(split_at).collect();
+        if tail.eq_ignore_ascii_case(word) {
+            return trimmed
+                .chars()
+                .take(split_at)
+                .collect::<String>()
+                .trim_end()
+                .to_string();
+        }
+    }
+    trimmed.to_string()
 }
 
 #[cfg(test)]

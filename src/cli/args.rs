@@ -270,8 +270,14 @@ impl CliArgs {
     pub async fn run_headless(&self) -> i32 {
         let cancel = crate::core::cancel::init_global();
         tokio::spawn(async move {
-            let _ = tokio::signal::ctrl_c().await;
-            cancel.cancel();
+            let mut press_count: usize = 0;
+            while tokio::signal::ctrl_c().await.is_ok() {
+                cancel.cancel();
+                press_count += 1;
+                if press_count >= 2 {
+                    std::process::exit(130);
+                }
+            }
         });
 
         if let Err(message) = self.validate() {
@@ -319,7 +325,12 @@ impl CliArgs {
         if self.update_ytdlp {
             let path = crate::utils::env::ytdlp_update_path();
             println!("{}", "⏳ Đang kiểm tra và cập nhật yt-dlp...".cyan());
-            return match crate::utils::env::update_ytdlp(&path) {
+            let update_result =
+                tokio::task::spawn_blocking(move || crate::utils::env::update_ytdlp(&path))
+                    .await
+                    .map_err(anyhow::Error::new)
+                    .and_then(|inner| inner);
+            return match update_result {
                 Ok(msg) => {
                     println!("{} {}", "✔".green().bold(), msg);
                     0
@@ -486,11 +497,21 @@ impl CliArgs {
             return 1;
         }
 
-        let processor =
-            BatchProcessor::new(settings, &env.ytdlp_path, &env.ffmpeg_path, env.has_node);
+        let processor = BatchProcessor::new(
+            settings.clone(),
+            &env.ytdlp_path,
+            &env.ffmpeg_path,
+            env.has_node,
+        );
         match processor.execute_batch(&tasks).await {
-            Ok(outcome) if outcome.failed_tasks.is_empty() => 0,
-            Ok(_) => 1,
+            Ok(outcome) => {
+                crate::cli::CliApp::print_batch_summary(&outcome, &settings.output_dir);
+                if outcome.failed_tasks.is_empty() {
+                    0
+                } else {
+                    1
+                }
+            }
             Err(error) => {
                 eprintln!("❌ {error}");
                 1

@@ -151,3 +151,24 @@ fn playlist_classification_covers_playlist_and_direct_media_variants() {
         "id".to_string()
     )));
 }
+
+#[test]
+fn youtube_channel_suffixes_are_stripped_from_artist_names() {
+    use ghita_download::core::matching::strip_channel_suffix;
+
+    assert_eq!(strip_channel_suffix("X - Topic"), "X");
+    assert_eq!(strip_channel_suffix("XVEVO"), "X");
+    assert_eq!(strip_channel_suffix("X - VEVO"), "X");
+    assert_eq!(strip_channel_suffix("X"), "X");
+    assert_eq!(
+        strip_channel_suffix("Sơn Tùng M-TP - Topic"),
+        "Sơn Tùng M-TP"
+    );
+    assert_eq!(strip_channel_suffix("Da LAB - Topic"), "Da LAB");
+    assert_eq!(strip_channel_suffix("ArtistVEVO - Topic"), "Artist");
+    assert_eq!(strip_channel_suffix("  Artist - Topic  "), "Artist");
+    assert_eq!(strip_channel_suffix("XVEVOMusic"), "XVEVOMusic");
+    assert_eq!(strip_channel_suffix("X - Live Session"), "X - Live Session");
+    assert_eq!(strip_channel_suffix("VEVO"), "VEVO");
+    assert_eq!(strip_channel_suffix(""), "");
+}

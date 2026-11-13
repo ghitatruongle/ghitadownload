@@ -400,9 +400,9 @@ pub struct DownloadSettings {
     pub concurrency: usize,
     #[serde(default)]
     pub keep_accents: bool,
-    #[serde(default)]
+    #[serde(skip)]
     pub cookies_file: Option<PathBuf>,
-    #[serde(default)]
+    #[serde(skip)]
     pub cookies_from_browser: Option<String>,
     #[serde(default)]
     pub raw: bool,

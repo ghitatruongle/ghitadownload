@@ -153,12 +153,15 @@ pub fn ensure_dir(path: &Path) -> std::io::Result<PathBuf> {
     Ok(cleaned)
 }
 
+const STALE_TEMP_DIR_MAX_AGE: std::time::Duration = std::time::Duration::from_secs(30 * 60);
+
 pub fn sweep_stale_temp_dirs(output_dir: &Path) -> std::io::Result<usize> {
     let entries = match std::fs::read_dir(output_dir) {
         Ok(entries) => entries,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(0),
         Err(e) => return Err(e),
     };
+    let cutoff = std::time::SystemTime::now() - STALE_TEMP_DIR_MAX_AGE;
     let mut removed = 0usize;
     for entry in entries.flatten() {
         let path = entry.path();
@@ -168,9 +171,104 @@ pub fn sweep_stale_temp_dirs(output_dir: &Path) -> std::io::Result<usize> {
         let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
             continue;
         };
-        if name.starts_with(".ghita_temp_") && std::fs::remove_dir_all(&path).is_ok() {
+        if !name.starts_with(".ghita_temp_") {
+            continue;
+        }
+        let is_stale = temp_dir_last_activity(&path)
+            .map(|last_activity| last_activity <= cutoff)
+            .unwrap_or(false);
+        if is_stale && std::fs::remove_dir_all(&path).is_ok() {
             removed += 1;
         }
     }
     Ok(removed)
+}
+
+fn temp_dir_last_activity(path: &Path) -> Option<std::time::SystemTime> {
+    let mut newest = std::fs::metadata(path)
+        .and_then(|meta| meta.modified())
+        .ok();
+    if let Ok(children) = std::fs::read_dir(path) {
+        for child in children.flatten() {
+            if let Ok(modified) = child.metadata().and_then(|meta| meta.modified()) {
+                newest = Some(match newest {
+                    Some(current) if current >= modified => current,
+                    _ => modified,
+                });
+            }
+        }
+    }
+    newest
+}
+
+#[cfg(test)]
+mod tests {
+    use super::sweep_stale_temp_dirs;
+    use std::path::Path;
+    use std::time::{Duration, SystemTime};
+
+    #[cfg(windows)]
+    fn open_dir_for_times(path: &Path) -> std::io::Result<std::fs::File> {
+        use std::os::windows::fs::OpenOptionsExt;
+        const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+        std::fs::OpenOptions::new()
+            .write(true)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+            .open(path)
+    }
+
+    #[cfg(not(windows))]
+    fn open_dir_for_times(path: &Path) -> std::io::Result<std::fs::File> {
+        std::fs::File::open(path)
+    }
+
+    fn set_dir_mtime(path: &Path, time: SystemTime) {
+        open_dir_for_times(path)
+            .and_then(|file| file.set_modified(time))
+            .unwrap_or_else(|error| panic!("Không đặt được mtime {}: {error}", path.display()));
+    }
+
+    #[test]
+    fn sweep_leaves_fresh_temp_dir_and_removes_old_one() {
+        let base = std::env::temp_dir().join(format!(
+            "ghita_sweep_age_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+
+        let fresh = base.join(".ghita_temp_fresh_run");
+        std::fs::create_dir_all(&fresh).unwrap();
+        std::fs::write(fresh.join("in_progress.tmp"), b"x").unwrap();
+
+        let old = base.join(".ghita_temp_stale_run");
+        std::fs::create_dir_all(&old).unwrap();
+        let old_time = SystemTime::now() - Duration::from_secs(60 * 60);
+        set_dir_mtime(&old, old_time);
+
+        let removed = sweep_stale_temp_dirs(&base).unwrap();
+        assert_eq!(removed, 1, "chỉ thư mục cũ bị dọn");
+        assert!(fresh.exists(), "thư mục mới phải được giữ nguyên");
+        assert!(!old.exists(), "thư mục quá 30 phút phải bị xóa");
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn sweep_missing_dir_returns_zero() {
+        let missing = std::env::temp_dir().join(format!(
+            "ghita_sweep_age_missing_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = std::fs::remove_dir_all(&missing);
+        assert_eq!(sweep_stale_temp_dirs(&missing).unwrap(), 0);
+    }
 }

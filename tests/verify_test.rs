@@ -256,3 +256,41 @@ fn test_lossy_transcode_note_flags_only_lossy_sources() {
     assert!(lossy_transcode_note("WAV", Some("pcm_s16le"), None).is_none());
     assert!(lossy_transcode_note("FLAC", None, None).is_none());
 }
+
+#[test]
+fn test_parse_ffprobe_output_extracts_streams_and_duration() {
+    use ghita_download::core::verify::parse_ffprobe_output;
+    let sample = "[STREAM]\ncodec_type=video\n[/STREAM]\n[STREAM]\ncodec_type=audio\n[/STREAM]\n[FORMAT]\nduration=212.123000\n[/FORMAT]\n";
+    let (duration, has_audio, has_video) = parse_ffprobe_output(sample);
+    assert_eq!(duration, Some(212.123));
+    assert!(has_audio, "phải nhận diện luồng audio");
+    assert!(has_video, "phải nhận diện luồng video");
+
+    let audio_only =
+        "[STREAM]\ncodec_type=audio\n[/STREAM]\n[FORMAT]\nduration=2.000000\n[/FORMAT]";
+    let (duration, has_audio, has_video) = parse_ffprobe_output(audio_only);
+    assert_eq!(duration, Some(2.0));
+    assert!(has_audio);
+    assert!(!has_video);
+}
+
+#[test]
+fn test_parse_ffprobe_output_handles_unknown_or_missing_duration() {
+    use ghita_download::core::verify::parse_ffprobe_output;
+    let na = "[STREAM]\ncodec_type=audio\n[/STREAM]\n[FORMAT]\nduration=N/A\n[/FORMAT]\n";
+    let (duration, has_audio, has_video) = parse_ffprobe_output(na);
+    assert_eq!(duration, None, "N/A không được parse thành số");
+    assert!(has_audio);
+    assert!(!has_video);
+
+    let (duration, has_audio, has_video) = parse_ffprobe_output("");
+    assert_eq!(duration, None);
+    assert!(!has_audio);
+    assert!(!has_video);
+
+    let junk = "hello world\nduration=abc\ncodec_type=subtitle\n";
+    let (duration, has_audio, has_video) = parse_ffprobe_output(junk);
+    assert_eq!(duration, None);
+    assert!(!has_audio);
+    assert!(!has_video);
+}
