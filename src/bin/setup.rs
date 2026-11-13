@@ -1,13 +1,14 @@
-#![cfg(windows)]
-
 use colored::Colorize;
 use std::ffi::OsStr;
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
+#[cfg(windows)]
 use winreg::enums::{RegType, HKEY_CURRENT_USER, KEY_READ, KEY_WRITE};
+#[cfg(windows)]
 use winreg::types::{FromRegValue, ToRegValue};
+#[cfg(windows)]
 use winreg::{RegKey, RegValue};
 
 const EMBEDDED_APP: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/embedded_app.bin"));
@@ -320,6 +321,7 @@ fn handle_install(default_dir: &Path, args: &SetupArgs) -> Result<(), String> {
         );
     }
 
+    #[cfg(windows)]
     match add_to_user_path(&install_dir) {
         Ok(true) => println!("✅ Đã thêm {} vào PATH người dùng.", install_dir.display()),
         Ok(false) => println!("ℹ️  Thư mục này đã có sẵn trong PATH người dùng."),
@@ -374,6 +376,7 @@ fn validate_install_dir(path: &Path) -> Result<(), String> {
 fn handle_uninstall(install_dir: &Path) -> Result<(), String> {
     validate_install_dir(install_dir)?;
     println!("⏳ Đang tiến hành gỡ cài đặt Ghita Downloader...");
+    #[cfg(windows)]
     remove_from_user_path(install_dir)?;
     remove_file_if_exists(&install_dir.join("ghitadownload.exe"))?;
     remove_file_if_exists(&install_dir.join("ghita.exe"))?;
@@ -482,12 +485,14 @@ fn install_ffmpeg_blocking() -> Result<PathBuf, String> {
         .map_err(|error| error.to_string())
 }
 
+#[cfg(windows)]
 fn open_user_environment_key() -> Result<RegKey, String> {
     RegKey::predef(HKEY_CURRENT_USER)
         .open_subkey_with_flags("Environment", KEY_READ | KEY_WRITE)
         .map_err(|error| format!("Không mở được registry HKCU\\Environment: {error}"))
 }
 
+#[cfg(windows)]
 fn read_user_path_value(key: &RegKey) -> Result<(Option<RegValue>, String), String> {
     match key.get_raw_value("Path") {
         Ok(value) => {
@@ -504,12 +509,14 @@ fn read_user_path_value(key: &RegKey) -> Result<(Option<RegValue>, String), Stri
     }
 }
 
+#[cfg(windows)]
 fn make_user_path_value(text: &str, value_type: RegType) -> RegValue {
     let mut value = text.to_reg_value();
     value.vtype = value_type;
     value
 }
 
+#[cfg(windows)]
 fn broadcast_environment_change() {
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         SendMessageTimeoutW, HWND_BROADCAST, SMTO_ABORTIFHUNG, WM_SETTINGCHANGE,
@@ -528,6 +535,7 @@ fn broadcast_environment_change() {
     }
 }
 
+#[cfg(windows)]
 fn try_update_user_path<F>(transform: &F) -> Result<bool, String>
 where
     F: Fn(&str) -> Option<String>,
@@ -547,6 +555,7 @@ where
     Ok(true)
 }
 
+#[cfg(windows)]
 fn update_user_path<F>(transform: F) -> Result<bool, String>
 where
     F: Fn(&str) -> Option<String>,
@@ -597,6 +606,7 @@ fn remove_path_entry(current: &str, dir_str: &str) -> Option<String> {
     (updated != current).then_some(updated)
 }
 
+#[cfg(windows)]
 fn add_to_user_path(dir: &Path) -> Result<bool, String> {
     let dir_str = dir.to_str().ok_or("Đường dẫn cài đặt không hợp lệ")?;
     update_user_path(|current| {
@@ -608,6 +618,7 @@ fn add_to_user_path(dir: &Path) -> Result<bool, String> {
     })
 }
 
+#[cfg(windows)]
 fn remove_from_user_path(dir: &Path) -> Result<(), String> {
     let dir_str = dir.to_str().ok_or("Đường dẫn cài đặt không hợp lệ")?;
     update_user_path(|current| remove_path_entry(current, dir_str)).map(|_| ())
