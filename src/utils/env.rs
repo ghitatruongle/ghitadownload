@@ -401,9 +401,14 @@ async fn extract_ffmpeg_binaries(
             if entry.is_dir() {
                 continue;
             }
-            let entry_name = Path::new(entry.name())
-                .file_name()
-                .map(|name| name.to_string_lossy().to_ascii_lowercase())
+            let entry_name = entry
+                .name()
+                .ok()
+                .and_then(|name| {
+                    Path::new(name.as_ref())
+                        .file_name()
+                        .map(|file| file.to_string_lossy().to_ascii_lowercase())
+                })
                 .unwrap_or_default();
             let destination = match entry_name.as_str() {
                 "ffmpeg.exe" => {
