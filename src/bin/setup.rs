@@ -1,3 +1,5 @@
+#![cfg(windows)]
+
 use colored::Colorize;
 use std::ffi::OsStr;
 use std::fs;
@@ -741,4 +743,10 @@ mod tests {
         assert!(!names.iter().any(|name| name == "other.json"));
         let _ = std::fs::remove_dir_all(&dir);
     }
+}
+
+#[cfg(not(windows))]
+fn main() {
+    eprintln!("Trình cài đặt Ghita Downloader chỉ hỗ trợ Windows.");
+    std::process::exit(1);
 }
