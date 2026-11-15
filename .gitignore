@@ -23,6 +23,7 @@ AGENT.md
 .freebuff/
 .mimosa/
 .zcode/
+.v2c/
 
 # Local-only diagnostic script (not shipped in repo)
 scripts/check-may-khac.bat
