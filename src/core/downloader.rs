@@ -88,7 +88,9 @@ impl StreamDownloader {
             let output_template = temp_dir.join(format!("{}.%(ext)s", unique_id));
             let output_template_str = output_template.to_string_lossy();
 
-            let mut cmd = tokio::process::Command::new(&self.ytdlp_path);
+            let mut cmd = crate::utils::process::hide_console_window_tokio(
+                tokio::process::Command::new(&self.ytdlp_path),
+            );
             let mut args: Vec<String> = Vec::new();
             if self.has_node {
                 args.push("--js-runtimes".to_string());
@@ -159,6 +161,10 @@ impl StreamDownloader {
                     continue;
                 }
             };
+
+            if let Some(pid) = child.id() {
+                crate::utils::job::assign_child_to_job(pid);
+            }
 
             if let Some(bar) = progress {
                 bar.set_length(0);

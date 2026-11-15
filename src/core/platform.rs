@@ -136,6 +136,7 @@ impl PlatformParser {
             ("fb.com", "Facebook"),
             ("instagram.com", "Instagram"),
             ("threads.net", "Threads"),
+            ("threads.com", "Threads"),
             ("soundcloud.com", "SoundCloud"),
             ("sndcdn.com", "SoundCloud"),
             ("bandcamp.com", "Bandcamp"),

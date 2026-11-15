@@ -1,7 +1,8 @@
 [package]
 name = "ghita_download"
-version = "0.0.6-preview"
+version = "0.0.6"
 edition = "2021"
+rust-version = "1.98"
 
 [[bin]]
 name = "ghitadownload"
@@ -14,7 +15,8 @@ path = "src/bin/setup.rs"
 
 [dependencies]
 tokio = { version = "1.38", features = ["full"] }
-reqwest = { version = "0.12", features = ["json"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "http2", "charset"] }
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 inquire = "0.7"
@@ -38,7 +40,10 @@ zip = { version = "9", default-features = false, features = ["deflate"] }
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.55"
-windows-sys = { version = "0.59", features = ["Win32_System_Registry", "Win32_UI_WindowsAndMessaging", "Win32_Foundation"] }
+windows-sys = { version = "0.59", features = ["Win32_System_Registry", "Win32_UI_WindowsAndMessaging", "Win32_Foundation", "Win32_System_Console", "Win32_Storage_FileSystem", "Win32_System_JobObjects", "Win32_System_Threading", "Win32_Security", "Win32_Security_Authorization"] }
 
 [build-dependencies]
 sha2 = "0.10"
+
+[dev-dependencies]
+proptest = "1"

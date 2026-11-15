@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 083252112cd486836f946437a2662f04d168df452e5ec8716cc175597c407769 # shrinks to input = "https://open\0spotify com/track/A0A0aAAAAA0aA00AaAaAaA"
+cc 107b5609fe0cf7de9b87ca1d51104fd660c48a282009a450dafb6de2c8e1eaf1 # shrinks to host_prefix = "", path = "//"

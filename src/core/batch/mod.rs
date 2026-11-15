@@ -10,6 +10,9 @@ mod execute;
 mod resolve;
 mod task;
 
+#[allow(unused_imports)]
+pub use resolve::is_soundcloud_set;
+
 pub const DEFAULT_CONCURRENCY: usize = 3;
 pub const DURATION_TOLERANCE_SECS: f64 = 10.0;
 pub const FAILED_QUEUE_FILE: &str = "failed_tasks.json";

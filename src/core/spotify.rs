@@ -108,6 +108,7 @@ fn track_meta_from_item(
     cover_url: Option<String>,
     track_number: Option<u32>,
     total_tracks: Option<u32>,
+    release_year: Option<u32>,
 ) -> Result<SpotifyTrackMeta> {
     let title = required_text(item, "title", "track Spotify")?;
     let subtitle = required_text(item, "subtitle", "track Spotify")?;
@@ -118,13 +119,24 @@ fn track_meta_from_item(
         title,
         artists,
         album: album.to_string(),
-        release_year: None,
+        release_year,
         duration_ms: item["duration"].as_u64(),
         cover_url,
         search_query,
         track_number,
         total_tracks,
     })
+}
+
+pub fn parse_release_year(iso: Option<&str>) -> Option<u32> {
+    iso.and_then(|value| value.get(0..4))
+        .and_then(|prefix| prefix.parse::<u32>().ok())
+        .filter(|year| (1900..=2100).contains(year))
+}
+
+fn track_id_from_uri(uri: Option<&str>) -> Option<String> {
+    let id = uri?.rsplit(':').next()?.trim();
+    (!id.is_empty()).then(|| id.to_string())
 }
 
 #[derive(Debug, Clone)]
@@ -210,10 +222,7 @@ impl SpotifyClient {
                 .unwrap_or(&title)
                 .to_string();
 
-            let release_year = entity["releaseDate"]["isoString"]
-                .as_str()
-                .and_then(|s| s.get(0..4))
-                .and_then(|y| y.parse::<u32>().ok());
+            let release_year = parse_release_year(entity["releaseDate"]["isoString"].as_str());
 
             let duration_ms = entity["duration"].as_u64();
 
@@ -329,7 +338,24 @@ impl SpotifyClient {
                 cover_url.clone(),
                 Some((idx + 1) as u32),
                 Some(total),
+                None,
             )?);
+        }
+
+        let release_year = match parse_release_year(entity["releaseDate"]["isoString"].as_str()) {
+            Some(year) => Some(year),
+            None => {
+                match track_list
+                    .first()
+                    .and_then(|item| track_id_from_uri(item["uri"].as_str()))
+                {
+                    Some(first_track_id) => self.fetch_track_release_year(&first_track_id).await,
+                    None => None,
+                }
+            }
+        };
+        for meta in &mut tracks {
+            meta.release_year = release_year;
         }
 
         Ok((album_name, tracks))
@@ -388,10 +414,65 @@ impl SpotifyClient {
                 cover_url.clone(),
                 Some((idx + 1) as u32),
                 Some(total),
+                None,
             )?);
         }
 
+        let track_ids: Vec<Option<String>> = track_list
+            .iter()
+            .map(|item| track_id_from_uri(item["uri"].as_str()))
+            .collect();
+        let years = self.fetch_track_years(&track_ids).await;
+        for (meta, year) in tracks.iter_mut().zip(years) {
+            meta.release_year = year;
+        }
+
         Ok((playlist_name, tracks))
+    }
+
+    async fn fetch_track_release_year(&self, track_id: &str) -> Option<u32> {
+        let embed_url = format!("https://open.spotify.com/embed/track/{}", track_id);
+        let resp = with_retry(|| {
+            let embed_url = embed_url.clone();
+            let client = self.client.clone();
+            async move {
+                Ok::<String, anyhow::Error>(
+                    client
+                        .get(embed_url)
+                        .send()
+                        .await?
+                        .error_for_status()?
+                        .text()
+                        .await?,
+                )
+            }
+        })
+        .await
+        .ok()?;
+        let caps = NEXT_DATA_RE.captures(&resp)?;
+        let v: Value = serde_json::from_str(&caps[1]).ok()?;
+        let entity = &v["props"]["pageProps"]["state"]["data"]["entity"];
+        parse_release_year(entity["releaseDate"]["isoString"].as_str())
+    }
+
+    async fn fetch_track_years(&self, track_ids: &[Option<String>]) -> Vec<Option<u32>> {
+        const YEAR_FETCH_CONCURRENCY: usize = 6;
+        let mut years = Vec::with_capacity(track_ids.len());
+        for chunk in track_ids.chunks(YEAR_FETCH_CONCURRENCY) {
+            let pending: Vec<_> = chunk
+                .iter()
+                .map(|id| async {
+                    match id {
+                        Some(track_id) => self.fetch_track_release_year(track_id).await,
+                        None => None,
+                    }
+                })
+                .collect();
+            for year in futures_util::future::join_all(pending).await {
+                years.push(year);
+            }
+        }
+        years
     }
 
     async fn fetch_via_oembed(&self, url: &str) -> Result<SpotifyTrackMeta> {

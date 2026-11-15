@@ -33,6 +33,143 @@ jobs:
       - name: Test suite
         run: cargo test --locked --all-targets
 
+  test-ubuntu:
+    name: test (ubuntu)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Rust toolchain (rust-toolchain.toml)
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install OpenSSL development headers and FFmpeg
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends pkg-config libssl-dev ffmpeg
+
+      - name: Unit tests (lib + bins)
+        run: cargo test --locked --lib --bins
+
+      - name: Platform-neutral integration tests
+        run: >
+          cargo test --locked
+          --test batch_tests
+          --test cli_args_tests
+          --test config_tests
+          --test core_tests
+          --test platform_edge_tests
+          --test installer_regression_tests
+          --test versioning
+          --test property_tests
+          --test golden_file_tests
+          --test regression_2026_11_tests
+
+  test-macos:
+    name: test (macos)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Rust toolchain (rust-toolchain.toml)
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install FFmpeg
+        run: brew install ffmpeg
+
+      - name: Unit tests (lib + bins)
+        run: cargo test --locked --lib --bins
+
+      - name: Platform-neutral integration tests
+        run: >
+          cargo test --locked
+          --test batch_tests
+          --test cli_args_tests
+          --test config_tests
+          --test core_tests
+          --test platform_edge_tests
+          --test installer_regression_tests
+          --test versioning
+          --test property_tests
+          --test golden_file_tests
+          --test regression_2026_11_tests
+
+  live-smoke:
+    name: live smoke (conditional)
+    runs-on: windows-latest
+    timeout-minutes: 30
+    if: ${{ contains(github.event.head_commit.message, '[live]') || startsWith(github.ref, 'refs/tags/') }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Rust toolchain (rust-toolchain.toml)
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install FFmpeg
+        shell: pwsh
+        run: |
+          choco install ffmpeg -y --no-progress
+          ffmpeg -version | Select-Object -First 1
+
+      - name: Restore pinned yt-dlp cache
+        id: ytdlp_cache
+        uses: actions/cache@v4
+        with:
+          path: bin/yt-dlp.exe
+          key: ytdlp-${{ hashFiles('Release/yt-dlp.json') }}
+
+      - name: Download pinned yt-dlp
+        if: steps.ytdlp_cache.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path "bin" | Out-Null
+          $manifest = Get-Content -LiteralPath "Release/yt-dlp.json" -Raw | ConvertFrom-Json
+          Invoke-WebRequest -Uri $manifest.url -OutFile "bin/yt-dlp.exe"
+          $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath "bin/yt-dlp.exe").Hash.ToLowerInvariant()
+          if ($hash -ne $manifest.sha256.ToLowerInvariant()) {
+            throw "yt-dlp SHA-256 mismatch: expected $($manifest.sha256), got $hash"
+          }
+
+      - name: Verify yt-dlp payload
+        shell: pwsh
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify_dependencies.ps1
+
+      - name: Build release binary
+        run: cargo build --release --locked
+
+      - name: Live smoke download (YouTube mp3)
+        env:
+          GHITA_CI: "1"
+        shell: pwsh
+        run: |
+          & "target/release/ghitadownload.exe" --link "https://www.youtube.com/watch?v=jNQXAC9IVRw" --format mp3 --output smoke_out
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "FAIL: download exited with $LASTEXITCODE" -ForegroundColor Red
+            throw "Live smoke download exited with $LASTEXITCODE"
+          }
+          $mp3 = Get-ChildItem -LiteralPath "smoke_out" -Filter *.mp3 -File -Recurse -ErrorAction SilentlyContinue |
+            Where-Object { $_.Length -gt 10KB } |
+            Select-Object -First 1
+          if ($null -eq $mp3) {
+            throw "No .mp3 larger than 10KB produced under smoke_out"
+          }
+          Write-Host "PASS: $($mp3.Name) ($([math]::Round($mp3.Length / 1KB)) KB)" -ForegroundColor Green
+
+      - name: check-ytdlp noop
+        shell: pwsh
+        run: |
+          & "target/release/ghitadownload.exe" --check-ytdlp
+          if ($LASTEXITCODE -notin 0, 1) {
+            throw "--check-ytdlp exited with $LASTEXITCODE (expected 0 = up to date or 1 = newer available)"
+          }
+          Write-Host "PASS: --check-ytdlp exit $LASTEXITCODE" -ForegroundColor Green
+
   linux-check:
     name: cargo check (linux)
     runs-on: ubuntu-latest

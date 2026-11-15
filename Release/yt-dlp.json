@@ -1,5 +1,11 @@
 {
   "version": "2026.10.26",
   "url": "https://github.com/yt-dlp/yt-dlp/releases/download/2026.10.26/yt-dlp.exe",
-  "sha256": "f5389d3698ecde4ef06f4e6b1ce0294fe9ac1396228c8990b8d3416d6d177a7d"
+  "sha256": "f5389d3698ecde4ef06f4e6b1ce0294fe9ac1396228c8990b8d3416d6d177a7d",
+  "platform_notes": {
+    "bandcamp": "FAIL: extractor parses tralbum but yields 'No video formats found!' on a live track (radiohead.bandcamp.com/track/weird-fishes-arpeggi); the older reference URL forss.bandcamp.com/track/flickermood is dead (HTTP 404 from plain curl too)",
+    "threads": "FAIL: threads.net 301-redirects to threads.com, generic extractor returns 'Unsupported URL: https://www.threads.com/@nasa'; pin has no dedicated Threads extractor",
+    "x_twitter": "PASS: guest token + GraphQL flow works; text-only tweet (x.com/SpaceX/status/1732824684683784325) correctly reports 'No video could be found in this tweet' (expected for a media-less tweet)",
+    "reddit": "SKIPPED: reddit.com is DNS-blocked on the dev machine (resolves to 127.0.0.1), probe not meaningful here"
+  }
 }

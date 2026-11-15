@@ -1,3 +1,4 @@
+use crate::utils::process::hide_console_window;
 use anyhow::{anyhow, Result};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
@@ -98,7 +99,7 @@ impl<'a> YouTubeClient<'a> {
     }
 
     fn configure_command(&self, url_or_query: &str, socket_timeout: &str) -> Command {
-        let mut cmd = Command::new(self.ytdlp_path);
+        let mut cmd = hide_console_window(Command::new(self.ytdlp_path));
         let mut args: Vec<String> = Vec::new();
         if self.has_node {
             args.push("--js-runtimes".to_string());
@@ -169,7 +170,7 @@ impl<'a> YouTubeClient<'a> {
     }
 
     fn build_flat_playlist_command(&self, playlist_url: &str) -> Command {
-        let mut cmd = Command::new(self.ytdlp_path);
+        let mut cmd = hide_console_window(Command::new(self.ytdlp_path));
         let mut args: Vec<String> = Vec::new();
         if self.has_node {
             args.push("--js-runtimes".to_string());
@@ -230,5 +231,116 @@ impl<'a> YouTubeClient<'a> {
             duration_secs,
             direct_url,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn client() -> YouTubeClient<'static> {
+        YouTubeClient::new(Path::new("yt-dlp"), false, None, None)
+    }
+
+    fn command_args(command: &Command) -> Vec<String> {
+        command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect()
+    }
+
+    #[test]
+    fn flat_playlist_command_puts_url_after_double_dash() {
+        let client = client();
+        let url = "--no-playlist&inject=1";
+        let command = client.build_flat_playlist_command(url);
+        let args = command_args(&command);
+        assert!(args.contains(&"--flat-playlist".to_string()));
+        assert!(args.contains(&"--print".to_string()));
+        assert_eq!(args.last().map(String::as_str), Some(url));
+        assert_eq!(args.get(args.len() - 2).map(String::as_str), Some("--"));
+    }
+
+    #[test]
+    fn flat_playlist_command_includes_print_template_and_default_args() {
+        let client = client();
+        let command =
+            client.build_flat_playlist_command("https://www.youtube.com/playlist?list=PLghita");
+        let args = command_args(&command);
+        assert_eq!(command.get_program().to_string_lossy(), "yt-dlp");
+        let print_pos = args
+            .iter()
+            .position(|arg| arg == "--print")
+            .expect("--print flag must be present");
+        assert_eq!(
+            args[print_pos + 1],
+            "%(id)s\t%(title)s\t%(uploader)s\t%(duration)s\t%(thumbnail)s\t%(webpage_url)s"
+        );
+        assert!(args.contains(&"--no-warnings".to_string()));
+        assert!(args.contains(&"--newline".to_string()));
+        assert!(args.contains(&"--socket-timeout".to_string()));
+    }
+
+    #[test]
+    fn flat_playlist_command_with_cookies_appends_cookie_args() {
+        let cookies = PathBuf::from("cookies.txt");
+        let client = YouTubeClient::new(Path::new("yt-dlp"), true, Some(&cookies), Some("firefox"));
+        let command =
+            client.build_flat_playlist_command("https://www.youtube.com/playlist?list=PLghita");
+        let args = command_args(&command);
+        let cookies_pos = args
+            .iter()
+            .position(|arg| arg == "--cookies")
+            .expect("--cookies flag must be present");
+        assert_eq!(args[cookies_pos + 1], "cookies.txt");
+        let browser_pos = args
+            .iter()
+            .position(|arg| arg == "--cookies-from-browser")
+            .expect("--cookies-from-browser flag must be present");
+        assert_eq!(args[browser_pos + 1], "firefox");
+        assert!(args.contains(&"--js-runtimes".to_string()));
+    }
+
+    #[test]
+    fn parse_flat_playlist_line_parses_realistic_tsv_line() {
+        let line = "dQw4w9WgXcQ\tNever Gonna Give You Up\tRick Astley\t212.0\thttps://i.ytimg.com/vi/dQw4w9WgXcQ/default.jpg\thttps://www.youtube.com/watch?v=dQw4w9WgXcQ";
+        let item = YouTubeClient::parse_flat_playlist_line(line).expect("valid line must parse");
+        assert_eq!(item.id, "dQw4w9WgXcQ");
+        assert_eq!(item.title, "Never Gonna Give You Up");
+        assert_eq!(item.uploader, "Rick Astley");
+        assert_eq!(item.duration_secs, Some(212.0));
+        assert_eq!(
+            item.thumbnail_url.as_deref(),
+            Some("https://i.ytimg.com/vi/dQw4w9WgXcQ/default.jpg")
+        );
+        assert_eq!(
+            item.direct_url,
+            "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+        );
+    }
+
+    #[test]
+    fn parse_flat_playlist_line_fills_defaults_for_na_fields() {
+        let line = "jNQXAC9IVRw\tMe at the zoo\tNA\tNA\tNA\tNA";
+        let item =
+            YouTubeClient::parse_flat_playlist_line(line).expect("line with NA fields must parse");
+        assert_eq!(item.id, "jNQXAC9IVRw");
+        assert_eq!(item.title, "Me at the zoo");
+        assert_eq!(item.uploader, "YouTube");
+        assert_eq!(item.duration_secs, None);
+        assert_eq!(item.thumbnail_url, None);
+        assert_eq!(
+            item.direct_url,
+            "https://www.youtube.com/watch?v=jNQXAC9IVRw"
+        );
+    }
+
+    #[test]
+    fn parse_flat_playlist_line_rejects_missing_id_or_title() {
+        assert!(YouTubeClient::parse_flat_playlist_line("").is_none());
+        assert!(YouTubeClient::parse_flat_playlist_line("NA\tTitle").is_none());
+        assert!(YouTubeClient::parse_flat_playlist_line("id\tNA").is_none());
+        assert!(YouTubeClient::parse_flat_playlist_line("id\t   ").is_none());
+        assert!(YouTubeClient::parse_flat_playlist_line("\t\t\t\t\t").is_none());
     }
 }

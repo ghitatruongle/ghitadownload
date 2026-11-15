@@ -67,6 +67,7 @@ pub fn write_manifest(
             "quality": settings.quality.as_ref().map(|q| q.to_string()),
             "output_dir": settings.output_dir.to_string_lossy(),
             "concurrency": settings.concurrency,
+            "duplicate_mode": settings.duplicate_mode,
         },
         "success_count": success_count,
         "failed_count": failed_count,

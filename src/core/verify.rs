@@ -1,3 +1,4 @@
+use crate::utils::process::hide_console_window;
 use anyhow::{anyhow, Result};
 use regex::Regex;
 use std::path::Path;
@@ -189,7 +190,7 @@ async fn probe_media_full_decode(
     audio_only: bool,
     mut cancel: tokio::sync::watch::Receiver<bool>,
 ) -> Result<MediaInfo> {
-    let mut cmd = Command::new(ffmpeg);
+    let mut cmd = hide_console_window(Command::new(ffmpeg));
     cmd.arg("-hide_banner").arg("-i").arg(path);
     if audio_only {
         cmd.arg("-vn");
@@ -265,7 +266,7 @@ async fn probe_media_headers_only(
     mut cancel: tokio::sync::watch::Receiver<bool>,
 ) -> Result<MediaInfo> {
     if let Some(ffprobe) = crate::utils::env::find_ffprobe() {
-        let mut cmd = Command::new(ffprobe);
+        let mut cmd = hide_console_window(Command::new(ffprobe));
         cmd.arg("-v")
             .arg("error")
             .arg("-show_entries")
@@ -316,7 +317,7 @@ async fn probe_media_headers_only(
         });
     }
 
-    let mut cmd = Command::new(ffmpeg);
+    let mut cmd = hide_console_window(Command::new(ffmpeg));
     cmd.arg("-hide_banner")
         .arg("-i")
         .arg(path)

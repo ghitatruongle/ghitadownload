@@ -12,7 +12,7 @@ use crate::core::config::{AppConfig, AudioFormat, AudioQuality, DownloadSettings
     name = "ghitadownload",
     version = env!("CARGO_PKG_VERSION"),
     about = "🎵 Ghita Downloader - Tải nhạc YouTube, Spotify, SoundCloud, Bandcamp, Suno AI, TikTok, Facebook, Instagram, Threads",
-    long_about = "🎵 Ghita Downloader (CLI)\n\nSử dụng:\n  ghitadownload                        Khởi động giao diện tương tác\n  ghitadownload --version              Xem phiên bản hiện tại\n  ghitadownload --help                 Xem trợ giúp đầy đủ\n\nChế độ tải nhanh (headless):\n  ghitadownload --link <URL> [<URL>...] --output <THƯ_MỤC> --format mp3|wav|flac|aac|opus|original|video --quality 320k\n  ghitadownload --file links.txt --format original\n  ghitadownload --retry-failed --output <THƯ_MỤC_CHỨA_failed_tasks.json>\n  ghitadownload --resume --output <THƯ_MỤC_CHỨA_pending_tasks.json>"
+    long_about = "🎵 Ghita Downloader (CLI)\n\nSử dụng:\n  ghitadownload                        Khởi động giao diện tương tác\n  ghitadownload --version              Xem phiên bản hiện tại\n  ghitadownload --help                 Xem trợ giúp đầy đủ\n  ghitadownload --update               Tải và chạy bộ cài đặt bản mới nhất từ GitHub Releases\n\nChế độ tải nhanh (headless):\n  ghitadownload --link <URL> [<URL>...] --output <THƯ_MỤC> --format mp3|wav|flac|aac|opus|original|video --quality 320k\n  ghitadownload --file links.txt --format original\n  ghitadownload --retry-failed --output <THƯ_MỤC_CHỨA_failed_tasks.json>\n  ghitadownload --resume --output <THƯ_MỤC_CHỨA_pending_tasks.json>"
 )]
 pub struct CliArgs {
     #[arg(long = "link", visible_alias = "links", num_args = 1.., value_name = "URL")]
@@ -51,6 +51,9 @@ pub struct CliArgs {
     #[arg(long = "update-ytdlp", visible_alias = "update-tools")]
     pub update_ytdlp: bool,
 
+    #[arg(long = "list-formats")]
+    pub list_formats: bool,
+
     #[arg(long = "check-ytdlp", visible_alias = "check-tools")]
     pub check_ytdlp: bool,
 
@@ -65,6 +68,12 @@ pub struct CliArgs {
 
     #[arg(long)]
     pub raw: bool,
+
+    #[arg(long = "update")]
+    pub update: bool,
+
+    #[arg(long = "no-update-check")]
+    pub no_update_check: bool,
 }
 
 pub const SUPPORTED_COOKIES_BROWSERS: &[&str] = &[
@@ -103,8 +112,60 @@ pub fn validate_cookie_args(
 }
 
 impl CliArgs {
+    async fn run_list_formats(&self) -> i32 {
+        let Some(url) = self.links.first().cloned() else {
+            eprintln!("❌ --list-formats cần URL qua cờ --link: ghitadownload --list-formats --link <URL>");
+            return 2;
+        };
+        let Some(ytdlp_path) = crate::utils::env::find_ytdlp() else {
+            eprintln!(
+                "❌ Không tìm thấy yt-dlp — chạy 'ghitadownload --check-ytdlp' để xem chi tiết."
+            );
+            return 2;
+        };
+        println!("📋 Các định dạng có sẵn cho: {url}");
+        let path = ytdlp_path.clone();
+        let joined = tokio::task::spawn_blocking(move || {
+            crate::utils::process::hide_console_window(std::process::Command::new(&path))
+                .arg("-F")
+                .arg("--no-playlist")
+                .arg("--")
+                .arg(&url)
+                .output()
+        })
+        .await;
+        match joined {
+            Ok(Ok(output)) if output.status.success() => {
+                print!("{}", String::from_utf8_lossy(&output.stdout));
+                let err = String::from_utf8_lossy(&output.stderr);
+                if !err.trim().is_empty() {
+                    eprint!("{err}");
+                }
+                0
+            }
+            Ok(Ok(output)) => {
+                eprintln!(
+                    "❌ yt-dlp trả về lỗi (exit {}).",
+                    output.status.code().unwrap_or(-1)
+                );
+                eprint!("{}", String::from_utf8_lossy(&output.stderr));
+                1
+            }
+            Ok(Err(error)) => {
+                eprintln!("❌ Không chạy được yt-dlp: {error}");
+                1
+            }
+            Err(error) => {
+                eprintln!("❌ Lỗi runtime khi liệt kê định dạng: {error}");
+                1
+            }
+        }
+    }
+
     pub fn is_headless(&self) -> bool {
-        self.update_ytdlp
+        self.update
+            || self.list_formats
+            || self.update_ytdlp
             || self.check_ytdlp
             || !self.links.is_empty()
             || self.file.is_some()
@@ -280,6 +341,14 @@ impl CliArgs {
             }
         });
 
+        if self.update {
+            return crate::utils::self_update::run_self_update().await;
+        }
+
+        if self.list_formats {
+            return self.run_list_formats().await;
+        }
+
         if let Err(message) = self.validate() {
             eprintln!("❌ {message}");
             return 1;
@@ -349,6 +418,13 @@ impl CliArgs {
                 return 1;
             }
         };
+        if !self.no_update_check && config.check_updates {
+            tokio::spawn(async {
+                if let Some(latest) = crate::utils::self_update::check_for_update(false).await {
+                    println!("🆕 Có bản mới {latest} — chạy 'ghitadownload --update' để nâng cấp.");
+                }
+            });
+        }
         let fallback_dir =
             std::env::current_dir().unwrap_or_else(|_| AppConfig::system_music_dir());
         let output_dir = self
@@ -476,6 +552,7 @@ impl CliArgs {
                 cookies_from_browser: self.cookies_from_browser.clone(),
                 raw: self.raw,
                 fetch_lyrics: self.lyrics || (!self.no_lyrics && config.fetch_lyrics),
+                duplicate_mode: config.duplicate_mode.clone(),
             };
             let processor = BatchProcessor::new(
                 settings.clone(),

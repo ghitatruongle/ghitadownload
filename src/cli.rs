@@ -2,6 +2,7 @@ pub mod args;
 pub mod multi_input;
 
 use anyhow::Result;
+use clap::Parser as _;
 use colored::{ColoredString, Colorize};
 use crossterm::terminal;
 use inquire::{Confirm, MultiSelect, Select, Text};
@@ -220,6 +221,7 @@ impl CliApp {
                 crate::core::cancel::global().cancel();
                 press_count += 1;
                 if press_count >= 2 {
+                    crate::utils::job::terminate_job_children();
                     std::process::exit(130);
                 }
             }
@@ -237,6 +239,15 @@ impl CliApp {
         let ffmpeg_path = env.ffmpeg_path;
         let has_node_runtime = env.has_node;
         let mut config = AppConfig::try_load().map_err(anyhow::Error::msg)?;
+
+        let args = crate::cli::args::CliArgs::parse();
+        if !args.no_update_check && config.check_updates {
+            tokio::spawn(async {
+                if let Some(latest) = crate::utils::self_update::check_for_update(false).await {
+                    println!("🆕 Có bản mới {latest} — chạy 'ghitadownload --update' để nâng cấp.");
+                }
+            });
+        }
 
         let terminal_dir =
             std::env::current_dir().unwrap_or_else(|_| AppConfig::system_music_dir());
@@ -266,6 +277,8 @@ impl CliApp {
                 format!("⏯ Tiếp tục batch dở dang{}", pending_badge),
                 "📜 Lịch sử tải gần đây".to_string(),
                 "🔄 Cập nhật công cụ yt-dlp (Lấy bản mới nhất từ GitHub)".to_string(),
+                "📤 Xuất cấu hình ra file JSON".to_string(),
+                "📥 Nhập cấu hình từ file JSON".to_string(),
                 "📂 Mở thư mục lưu nhạc trong File Explorer".to_string(),
                 "❌ Thoát ứng dụng".to_string(),
             ];
@@ -324,6 +337,7 @@ impl CliApp {
                     cookies_from_browser: None,
                     raw: false,
                     fetch_lyrics: config.fetch_lyrics,
+                    duplicate_mode: config.duplicate_mode.clone(),
                 };
 
                 let batch_processor =
@@ -532,6 +546,55 @@ impl CliApp {
                     Err(e) => {
                         println!("\n{} {}\n", err("❌ Lỗi cập nhật:"), e);
                     }
+                }
+            } else if choice.starts_with("📤") {
+                match AppConfig::try_load() {
+                    Ok(config) => {
+                        let target = dirs::document_dir()
+                            .unwrap_or_else(std::env::temp_dir)
+                            .join("ghita_config_export.json");
+                        match config.try_save_to(&target) {
+                            Ok(()) => println!(
+                                "{} Đã xuất cấu hình: {}",
+                                "✔".green(),
+                                target.display().to_string().cyan()
+                            ),
+                            Err(error) => {
+                                println!("{} Không ghi được file xuất: {error}", "✖".red())
+                            }
+                        }
+                    }
+                    Err(error) => {
+                        println!("{} Không đọc được cấu hình hiện tại: {error}", "✖".red())
+                    }
+                }
+            } else if choice.starts_with("📥") {
+                let path_input = match prompt_skippable(
+                    Text::new("📁 Đường dẫn file cấu hình JSON cần nhập:")
+                        .with_help_message(
+                            "Nhập đường dẫn tuyệt đối tới file ghita_config_export.json",
+                        )
+                        .prompt(),
+                )? {
+                    Some(value) => value,
+                    None => {
+                        println!("{}", warn("↩ Đã hủy nhập — quay lại menu chính."));
+                        continue;
+                    }
+                };
+                let source = Path::new(path_input.trim().trim_matches('"'));
+                match AppConfig::try_load_from(source) {
+                    Ok(imported) => match imported.try_save() {
+                        Ok(()) => println!(
+                            "{} Đã nhập cấu hình từ {}. Khởi động lại ứng dụng để áp dụng đầy đủ.",
+                            "✔".green(),
+                            source.display().to_string().cyan()
+                        ),
+                        Err(error) => {
+                            println!("{} Không lưu được cấu hình nhập: {error}", "✖".red())
+                        }
+                    },
+                    Err(error) => println!("{} File cấu hình không hợp lệ: {error}", "✖".red()),
                 }
             } else if choice.starts_with("📂") {
                 let _ = ensure_dir(&active_output_dir);

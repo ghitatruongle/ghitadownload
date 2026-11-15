@@ -172,3 +172,39 @@ fn youtube_channel_suffixes_are_stripped_from_artist_names() {
     assert_eq!(strip_channel_suffix("VEVO"), "VEVO");
     assert_eq!(strip_channel_suffix(""), "");
 }
+
+#[test]
+fn soundcloud_sets_urls_are_detected_for_playlist_expansion() {
+    use ghita_download::core::batch::is_soundcloud_set;
+
+    assert!(is_soundcloud_set(
+        "https://soundcloud.com/forss/sets/soulhack"
+    ));
+    assert!(is_soundcloud_set(
+        "https://soundcloud.com/forss/sets/soulhack?si=abc123"
+    ));
+    assert!(is_soundcloud_set(
+        "https://soundcloud.com/user-123/sets/my-favorite-tracks/"
+    ));
+    assert!(!is_soundcloud_set(
+        "https://soundcloud.com/forss/flickermood"
+    ));
+    assert!(!is_soundcloud_set("https://soundcloud.com/forss/sets"));
+    assert!(!is_soundcloud_set(
+        "https://api-v2.soundcloud.com/tracks/295"
+    ));
+    assert!(!is_soundcloud_set(
+        "https://www.tiktok.com/@user/sets/abc123"
+    ));
+}
+
+#[test]
+fn soundcloud_sets_still_classified_as_social_video_by_platform_parser() {
+    assert_eq!(
+        PlatformParser::parse("https://soundcloud.com/forss/sets/soulhack"),
+        UrlType::SocialVideo {
+            url: "https://soundcloud.com/forss/sets/soulhack".to_string(),
+            platform_name: "SoundCloud".to_string(),
+        }
+    );
+}

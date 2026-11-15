@@ -9,6 +9,7 @@ fn settings_with_cookies() -> DownloadSettings {
         video_resolution: Some(1080),
         concurrency: 3,
         keep_accents: false,
+        duplicate_mode: "rename".to_string(),
         cookies_file: Some(PathBuf::from(r"C:\private\cookies.txt")),
         cookies_from_browser: Some("firefox".to_string()),
         raw: false,
@@ -212,5 +213,97 @@ fn atomic_save_replaces_existing_config() {
         })
         .count();
     assert_eq!(temporary_files, 0);
+    let _ = std::fs::remove_dir_all(directory);
+}
+
+#[test]
+fn old_config_without_schema_version_loads_as_v1() {
+    let directory = test_directory("schema_missing");
+    let path = directory.join("ghita_config.json");
+    let json = serde_json::json!({
+        "last_output_dir": r"D:\Music"
+    });
+    std::fs::write(&path, serde_json::to_string(&json).unwrap()).unwrap();
+    let config = AppConfig::try_load_from(&path).unwrap();
+    assert_eq!(config.schema_version, 1);
+    assert_eq!(config.duplicate_mode, "rename");
+    let _ = std::fs::remove_dir_all(directory);
+}
+
+#[test]
+fn config_with_schema_version_zero_migrates_to_one() {
+    let directory = test_directory("schema_zero");
+    let path = directory.join("ghita_config.json");
+    let json = serde_json::json!({
+        "schema_version": 0,
+        "last_output_dir": r"D:\Music"
+    });
+    std::fs::write(&path, serde_json::to_string(&json).unwrap()).unwrap();
+    let config = AppConfig::try_load_from(&path).unwrap();
+    assert_eq!(config.schema_version, 1);
+    let _ = std::fs::remove_dir_all(directory);
+}
+
+#[test]
+fn unknown_future_config_keys_are_ignored_and_dropped_on_save() {
+    let directory = test_directory("unknown_keys");
+    let path = directory.join("ghita_config.json");
+    let json = serde_json::json!({
+        "schema_version": 1,
+        "last_output_dir": r"D:\Music",
+        "brand_new_future_key": 42
+    });
+    std::fs::write(&path, serde_json::to_string(&json).unwrap()).unwrap();
+    let config = AppConfig::try_load_from(&path).unwrap();
+    assert_eq!(config.last_output_dir, Some(PathBuf::from(r"D:\Music")));
+    config.try_save().unwrap();
+    let saved = std::fs::read_to_string(
+        std::path::Path::new(&std::env::var_os("LOCALAPPDATA").unwrap())
+            .join("GhitaDownload")
+            .join("ghita_config.json"),
+    )
+    .ok();
+    if let Some(saved) = saved {
+        assert!(!saved.contains("brand_new_future_key"));
+    }
+    let _ = std::fs::remove_dir_all(directory);
+}
+
+#[test]
+fn save_always_serializes_current_schema_version() {
+    let directory = test_directory("force_schema");
+    let path = directory.join("ghita_config.json");
+    let json = serde_json::json!({
+        "schema_version": 7,
+        "last_output_dir": r"D:\Music"
+    });
+    std::fs::write(&path, serde_json::to_string(&json).unwrap()).unwrap();
+    let mut config = AppConfig::try_load_from(&path).unwrap();
+    config.schema_version = 7;
+    config.try_save_to(&path).unwrap();
+    let saved = std::fs::read_to_string(&path).unwrap();
+    let value: serde_json::Value = serde_json::from_str(&saved).unwrap();
+    assert_eq!(value.get("schema_version"), Some(&serde_json::json!(1)));
+    let _ = std::fs::remove_dir_all(directory);
+}
+
+#[test]
+fn migrate_schema_maps_zero_to_one_and_passes_future() {
+    assert_eq!(ghita_download::core::config::migrate_schema(0), 1);
+    assert_eq!(ghita_download::core::config::migrate_schema(1), 1);
+    assert_eq!(ghita_download::core::config::migrate_schema(2), 2);
+    assert_eq!(ghita_download::core::config::migrate_schema(999), 999);
+}
+
+#[test]
+fn check_updates_defaults_to_enabled() {
+    let directory = test_directory("check_updates_default");
+    let path = directory.join("ghita_config.json");
+    let json = serde_json::json!({
+        "last_output_dir": r"D:\Music"
+    });
+    std::fs::write(&path, serde_json::to_string(&json).unwrap()).unwrap();
+    let config = AppConfig::try_load_from(&path).unwrap();
+    assert!(config.check_updates);
     let _ = std::fs::remove_dir_all(directory);
 }

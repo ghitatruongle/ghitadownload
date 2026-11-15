@@ -1,3 +1,4 @@
+use crate::utils::process::hide_console_window;
 use anyhow::{anyhow, Result};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -57,6 +58,9 @@ impl Transcoder {
         let mut child = tokio::process::Command::from(cmd)
             .spawn()
             .map_err(|e| anyhow!("Không thể chạy FFmpeg: {}", e))?;
+        if let Some(pid) = child.id() {
+            crate::utils::job::assign_child_to_job(pid);
+        }
         let Some(mut stderr_pipe) = child.stderr.take() else {
             let _ = child.kill().await;
             return Err(anyhow!("Không đọc được stderr của FFmpeg"));
@@ -108,7 +112,7 @@ impl Transcoder {
                 format
             ));
         }
-        let mut cmd = Command::new(ffmpeg_path);
+        let mut cmd = hide_console_window(Command::new(ffmpeg_path));
         cmd.arg("-y").arg("-i").arg(input_path).arg("-vn");
 
         match format {
@@ -232,7 +236,7 @@ impl Transcoder {
             ));
         }
 
-        let mut cmd = Command::new(&self.ffmpeg_path);
+        let mut cmd = hide_console_window(Command::new(&self.ffmpeg_path));
         cmd.arg("-y")
             .arg("-i")
             .arg(input_path)
@@ -260,6 +264,9 @@ impl Transcoder {
         let mut child = tokio::process::Command::from(cmd)
             .spawn()
             .map_err(|e| anyhow!("Không thể chạy FFmpeg: {}", e))?;
+        if let Some(pid) = child.id() {
+            crate::utils::job::assign_child_to_job(pid);
+        }
         let Some(mut stderr_pipe) = child.stderr.take() else {
             let _ = child.kill().await;
             return Err(anyhow!("Không đọc được stderr của FFmpeg"));
@@ -332,7 +339,7 @@ pub fn embed_cover_and_lyrics_ffmpeg(
     } else {
         "mjpeg"
     };
-    let mut command = Command::new(ffmpeg);
+    let mut command = hide_console_window(Command::new(ffmpeg));
     command
         .arg("-y")
         .arg("-i")
@@ -397,7 +404,8 @@ pub fn set_lyrics_ffmpeg(input: &Path, lyrics: &str, ffmpeg: &Path) -> Result<Pa
         .and_then(|value| value.to_str())
         .unwrap_or("audio");
     let output = parent.join(format!("{}.lyrics_{}.{}", stem, stamp, extension));
-    let result = Command::new(ffmpeg)
+    let probe = Command::new(ffmpeg);
+    let result = hide_console_window(probe)
         .arg("-y")
         .arg("-i")
         .arg(input)

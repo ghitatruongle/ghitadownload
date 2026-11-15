@@ -66,6 +66,30 @@ jobs:
         shell: pwsh
         run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify_dependencies.ps1
 
+      - name: Gate yt-dlp pin consistency
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: pwsh
+        run: |
+          ./scripts/check_ytdlp_pin.ps1
+          $manifest = Get-Content -LiteralPath "Release/yt-dlp.json" -Raw | ConvertFrom-Json
+          $shaFileRaw = (Get-Content -LiteralPath "Release/yt-dlp.sha256" -Raw).Trim()
+          $shaFile = ($shaFileRaw -split '\s+')[0].ToLowerInvariant()
+          if ($shaFile -notmatch '^[0-9a-f]{64}$') {
+            throw "Release/yt-dlp.sha256 does not contain a 64-hex SHA-256 token: '$shaFileRaw'"
+          }
+          if ($shaFile -ne $manifest.sha256.ToLowerInvariant()) {
+            throw "yt-dlp pin desync: Release/yt-dlp.sha256 ($shaFile) != Release/yt-dlp.json ($($manifest.sha256))"
+          }
+          if (!(Test-Path -LiteralPath "bin/yt-dlp.exe" -PathType Leaf)) {
+            throw "Missing yt-dlp payload: bin/yt-dlp.exe"
+          }
+          $binHash = (Get-FileHash -Algorithm SHA256 -LiteralPath "bin/yt-dlp.exe").Hash.ToLowerInvariant()
+          if ($binHash -ne $shaFile) {
+            throw "yt-dlp pin desync: bin/yt-dlp.exe hash ($binHash) != pinned sha256 ($shaFile)"
+          }
+          Write-Host "yt-dlp pin gate OK: sha-file == manifest == bin payload ($shaFile)"
+
       - name: Build installer (fmt + clippy + test + verify inside)
         env:
           GHITA_CI: "1"
@@ -84,6 +108,44 @@ jobs:
       - name: Verify published artifact
         shell: pwsh
         run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify_release.ps1
+
+      - name: Gate CHANGELOG release artifact SHA
+        shell: pwsh
+        run: |
+          $version = $env:VERSION
+          if ([string]::IsNullOrWhiteSpace($version)) { throw "VERSION env var is not set" }
+          $artifact = "Release/ghitadownload_$version.exe"
+          if (!(Test-Path -LiteralPath $artifact -PathType Leaf)) { throw "Missing release artifact: $artifact" }
+          $artifactHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $artifact).Hash
+          $lines = (Get-Content -LiteralPath "CHANGELOG.md" -Raw) -split "`r?`n"
+          $versionHeader = "## [$version]"
+          $versionIndex = -1
+          for ($i = 0; $i -lt $lines.Count; $i++) {
+            if ($lines[$i].Trim() -eq $versionHeader) { $versionIndex = $i; break }
+          }
+          if ($versionIndex -lt 0) { throw "CHANGELOG.md has no '$versionHeader' section" }
+          $sectionEnd = $lines.Count
+          for ($i = $versionIndex + 1; $i -lt $lines.Count; $i++) {
+            if ($lines[$i] -match '^##\s') { $sectionEnd = $i; break }
+          }
+          $section = @($lines[$versionIndex..($sectionEnd - 1)])
+          $artifactIndex = -1
+          for ($i = 0; $i -lt $section.Count; $i++) {
+            if ($section[$i] -match '^### Release artifact\s*$') { $artifactIndex = $i; break }
+          }
+          if ($artifactIndex -lt 0) { throw "CHANGELOG '$versionHeader' is missing the '### Release artifact' section" }
+          if ($artifactIndex + 1 -ge $section.Count) { throw "CHANGELOG '### Release artifact' under '$versionHeader' is empty" }
+          $shaMatch = $null
+          foreach ($line in $section[($artifactIndex + 1)..($section.Count - 1)]) {
+            if ($line -match 'SHA-256[^\r\n]*?([0-9a-fA-F]{64})') { $shaMatch = $Matches[1]; break }
+          }
+          if ($null -eq $shaMatch) {
+            throw "CHANGELOG '### Release artifact' under '$versionHeader' contains no 64-hex SHA-256"
+          }
+          if ($shaMatch.ToLowerInvariant() -ne $artifactHash.ToLowerInvariant()) {
+            throw "CHANGELOG SHA-256 ($shaMatch) does not match the built artifact hash ($artifactHash)"
+          }
+          Write-Host "CHANGELOG artifact SHA verified against $artifact ($shaMatch)"
 
       - name: Collect artifact metadata
         id: meta

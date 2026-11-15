@@ -1,5 +1,36 @@
 # Changelog
 
+## [0.0.6] - 2026-11-15
+
+### Added
+- Full self-update path for the "final" release: the installer gains `--update-app` (compares the installed version against the embedded one, installs atomically while keeping `ghita_config.json` / pending / failed state, and backs up the previous binary to `ghitadownload.prev.exe`), the installer also gains `--rollback` to swap back to that backup in one step, and the app gains `ghitadownload --update` (fetches the latest GitHub release, verifies the asset SHA-256 digest, downloads and runs the new installer silently).
+- Config schema versioning: `ghita_config.json` now carries `schema_version` (currently 1) with a migration hook and a tolerant loader (unknown future keys are ignored and dropped on next save), so future releases cannot break existing configs.
+- Opt-in-able update check: the interactive menu and headless runs can surface a single "🆕 Có bản mới" notice (cached 24h, disabled via `--no-update-check` or the new `check_updates` setting).
+- `--list-formats <URL>`: print the available streams for a URL via `yt-dlp -F` before committing to a download.
+- Duplicate-file handling is now configurable (`duplicate_mode`: `rename` default / `skip`); `skip` marks already-downloaded tracks as done with an explicit note instead of creating `(1)` copies.
+- Settings export/import: the dashboard can write the whole `ghita_config.json` to `Documents\ghita_config_export.json` and import one back.
+- Durability hardening: a Windows Job Object now owns every yt-dlp/FFmpeg child process (Ctrl+C or an app crash kills the whole tree, no orphaned processes), panics are caught by a hook that writes `%LOCALAPPDATA%\GhitaDownload\logs\ghita.log` (rotating, 5MB × 3) with a friendly Vietnamese message, Ctrl+Break / logoff / shutdown trigger graceful cancellation with exit code 130, batches pre-check free disk space (warn under 1GB), stale `.part` files older than 24h are swept before each batch, and terminal errors map to distinct exit codes (130 cancelled / 20 pin / 10 config / 30 network).
+- CI gates: the release workflow now fails if the yt-dlp pin (`Release/yt-dlp.json` ↔ `yt-dlp.sha256` ↔ `bin/yt-dlp.exe`) is out of sync or the CHANGELOG lacks a release-artifact SHA; `smoke_live` runs conditionally on `[live]` commits or tags; CI tests on ubuntu + macos in addition to windows; MSRV declared (`rust-version = 1.98`); `scripts
+elease_check.ps1` runs all gates in one command.
+- Test depth: property-based tests (proptest) for the platform parser, title matching bounds and filename sanitization; golden-file tests locking the `pending_tasks.json` / `failed_tasks.json` / manifest on-disk formats; regression tests with a fake yt-dlp for the 2026-11-13 re-ranking and headless-summary bugs; adversarial filename inputs.
+
+### Changed
+- `update_ytdlp` no longer trusts `yt-dlp --update`: it always downloads through the pinned source with SHA-256 verification, honors a runtime `yt-dlp.json` manifest next to the binary, and fails closed when a source override has no matching hash — the pin can no longer drift.
+- The PowerShell downloader is gone from the tool chain: all downloads (FFmpeg installer, yt-dlp updates) stream through reqwest with retry; TLS switched from native-tls to rustls (verified live).
+- `replace_file` uses Windows `ReplaceFileW` when possible, cleans up stale `.bak` backups older than 7 days, and every yt-dlp/FFmpeg spawn hides its console window (`CREATE_NO_WINDOW`).
+- `threads.com` (the domain Threads migrated to) now parses as Threads alongside `threads.net`.
+- Spotify albums/playlists populate `release_year` (from the track embed; MP3 gets a TDRC/TYER year frame), and batches without cookies print a one-time honest notice that YouTube caps audio at ~128–160 kbps.
+- SoundCloud `/sets/` URLs expand into per-track tasks (slug-derived titles, api-v2 entries supported) instead of failing as generic videos.
+
+### Fixed
+- The yt-dlp pin update path silently accepted an override URL with the compiled-in SHA (fail-open); it now fails closed.
+- `update_ytdlp` fast path could bypass pin verification entirely (removed).
+- Golden on-disk formats stay stable: `duplicate_mode` added to settings/manifest snapshots in a backward-compatible way (missing key = `rename`).
+
+### Release artifact
+- `Release/ghitadownload_0.0.6.exe`
+- SHA-256: `D081F75534871DE14256206EC6E349B810D120B0A19A80E5C0748AC6496CA190`
+
 ## [0.0.6-preview] - 2026-11-10
 
 ### Added

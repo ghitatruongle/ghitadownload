@@ -19,6 +19,7 @@ fn sample_settings(output_dir: PathBuf) -> DownloadSettings {
         video_resolution: None,
         concurrency: 3,
         keep_accents: false,
+        duplicate_mode: "rename".to_string(),
         cookies_file: None,
         cookies_from_browser: None,
         raw: false,

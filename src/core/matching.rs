@@ -408,6 +408,7 @@ fn strip_trailing_word(name: &str, word: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
 
     fn candidate(title: &str, uploader: &str, duration: Option<f64>) -> SearchCandidate {
         SearchCandidate {
@@ -566,5 +567,69 @@ mod tests {
         assert!((dice_bigrams("a", "a") - 1.0).abs() < 1e-9);
         assert!(dice_bigrams("a", "b").abs() < 1e-9);
         assert!(dice_bigrams("", "abc").abs() < 1e-9);
+    }
+
+    proptest! {
+        #[test]
+        fn score_candidate_stays_within_unit_range(
+            candidate_title in any::<String>(),
+            uploader in any::<String>(),
+            expected_title in any::<String>(),
+            artists in proptest::collection::vec(any::<String>(), 0..4),
+            candidate_duration in proptest::option::of(0.0..100_000.0f64),
+            expected_duration in proptest::option::of(0..100_000u64),
+        ) {
+            let candidate = SearchCandidate {
+                url: String::new(),
+                title: candidate_title.clone(),
+                uploader,
+                duration_secs: candidate_duration,
+            };
+            let artist_refs: Vec<&str> = artists.iter().map(String::as_str).collect();
+            let score = score_candidate(&candidate, &expected_title, &artist_refs, expected_duration);
+            assert!(score.is_finite(), "score must be finite, got {score}");
+            assert!(
+                (0.0..=1.0).contains(&score),
+                "score {score} outside [0.0, 1.0] for title {candidate_title:?}"
+            );
+        }
+
+        #[test]
+        fn duration_gap_over_15_secs_hard_rejects_candidate(
+            expected_secs in 1..100_000u64,
+            overshoot in 15.5..100_000.0f64,
+            candidate_title in any::<String>(),
+            expected_title in any::<String>(),
+            artists in proptest::collection::vec(any::<String>(), 0..4),
+        ) {
+            let candidate = SearchCandidate {
+                url: String::new(),
+                title: candidate_title,
+                uploader: String::new(),
+                duration_secs: Some(expected_secs as f64 + overshoot),
+            };
+            let artist_refs: Vec<&str> = artists.iter().map(String::as_str).collect();
+            let score = score_candidate(&candidate, &expected_title, &artist_refs, Some(expected_secs));
+            assert_eq!(score, 0.0, "|duration diff| > 15 must zero the score");
+            let best = pick_best(std::slice::from_ref(&candidate), &expected_title, &artists, Some(expected_secs));
+            assert!(best.is_none(), "gated candidate must never win pick_best");
+        }
+
+        #[test]
+        fn normalize_text_never_panics_and_folds_to_lowercase_words(input in any::<String>()) {
+            let normalized = normalize_text(&input);
+            assert!(
+                normalized
+                    .chars()
+                    .all(|character| !character.is_whitespace() || character == ' '),
+                "normalize_text collapses all whitespace to plain spaces"
+            );
+            assert!(
+                normalized
+                    .split(' ')
+                    .all(|word| word.chars().all(|character| !character.is_ascii_uppercase())),
+                "normalize_text output must have no ASCII uppercase characters: {normalized:?}"
+            );
+        }
     }
 }

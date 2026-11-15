@@ -235,3 +235,63 @@ fn set_lyrics_ffmpeg_writes_lyrics_metadata() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[tokio::test]
+async fn tag_mp3_writes_release_year_tdrc_frame() {
+    let Some(ffmpeg) = find_ffmpeg() else {
+        eprintln!("Bỏ qua test: FFmpeg khả dụng qua PATH là bắt buộc");
+        return;
+    };
+    let dir = test_dir("release_year");
+    let mp3_path = dir.join("sample.mp3");
+    generate_mp3(&ffmpeg, &mp3_path);
+
+    let mut meta = sample_metadata();
+    meta.release_year = Some(2023);
+    Tagger::new()
+        .tag_mp3(&mp3_path, &meta)
+        .await
+        .expect("tag_mp3 phải ghi được năm phát hành");
+
+    let tag = id3::Tag::read_from_path(&mp3_path).expect("phải đọc lại được tag ID3");
+    assert_eq!(tag.year(), Some(2023));
+    let year_frames: Vec<_> = tag
+        .frames()
+        .filter(|frame| frame.id() == "TDRC" || frame.id() == "TYER")
+        .collect();
+    assert_eq!(
+        year_frames.len(),
+        1,
+        "ID3 phải ghi năm phát hành vào đúng một frame năm (TDRC/TYER)"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn tag_mp3_omits_year_frame_when_release_year_absent() {
+    let Some(ffmpeg) = find_ffmpeg() else {
+        eprintln!("Bỏ qua test: FFmpeg khả dụng qua PATH là bắt buộc");
+        return;
+    };
+    let dir = test_dir("no_year");
+    let mp3_path = dir.join("sample.mp3");
+    generate_mp3(&ffmpeg, &mp3_path);
+
+    let mut meta = sample_metadata();
+    meta.release_year = None;
+    Tagger::new()
+        .tag_mp3(&mp3_path, &meta)
+        .await
+        .expect("tag_mp3 không cần năm phát hành khi metadata trống");
+
+    let tag = id3::Tag::read_from_path(&mp3_path).expect("phải đọc lại được tag ID3");
+    assert_eq!(tag.year(), None);
+    let year_frames: Vec<_> = tag.frames().filter(|frame| frame.id() == "TDRC").collect();
+    assert!(
+        year_frames.is_empty(),
+        "không được ghi frame TDRC khi release_year là None"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}

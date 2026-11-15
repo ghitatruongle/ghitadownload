@@ -3,6 +3,7 @@ use colored::Colorize;
 use indicatif::{ProgressBar, ProgressStyle};
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 use std::sync::Arc;
 
 use crate::core::matching::strip_channel_suffix;
@@ -11,11 +12,39 @@ use crate::core::spotify::{SpotifyClient, SpotifyTrackMeta};
 use crate::core::suno::SunoClient;
 use crate::core::tagger::AudioMetadata;
 use crate::core::youtube::{YouTubeClient, YouTubeTrackMeta};
+use crate::core::ytdlp::YTDLP_DEFAULT_ARGS;
 use crate::utils::file_helper::sanitize_name;
 
 use super::{BatchProcessor, DownloadTask};
 
 const RESOLVE_CONCURRENCY: usize = 6;
+
+pub fn is_soundcloud_set(url: &str) -> bool {
+    let Ok(parsed) = url::Url::parse(url.trim()) else {
+        return false;
+    };
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return false;
+    }
+    let Some(host) = parsed.host_str().map(|host| host.to_ascii_lowercase()) else {
+        return false;
+    };
+    if host != "soundcloud.com" && !host.ends_with(".soundcloud.com") {
+        return false;
+    }
+    let segments: Vec<&str> = parsed
+        .path()
+        .split('/')
+        .filter(|segment| !segment.is_empty())
+        .collect();
+    segments.len() >= 3 && segments[1].eq_ignore_ascii_case("sets")
+}
+
+struct SoundCloudSetItem {
+    url: String,
+    album: String,
+    artist: String,
+}
 
 struct ResolveContext {
     raw: bool,
@@ -508,49 +537,53 @@ async fn resolve_single_input(
             ));
         }
         UrlType::SocialVideo { url, platform_name } => {
-            emit_input_log(
-                &context,
-                &step,
-                &format!("Đang lấy thông tin {}...", platform_name),
-            );
-            if let Ok(item) = resolve_youtube_media(
-                context.ytdlp_path.as_path(),
-                context.has_node,
-                url.clone(),
-                platform_name.clone(),
-                context.cookies_file.as_ref(),
-                context.cookies_from_browser.as_deref(),
-            )
-            .await
-            {
-                let cleaned_uploader = strip_channel_suffix(&item.uploader);
-                tasks.push(build_task(
-                    format!("{} - {}", cleaned_uploader, item.title),
-                    item.direct_url,
-                    Vec::new(),
-                    None,
-                    item.title,
-                    vec![cleaned_uploader],
-                    platform_name.clone(),
-                    None,
-                    item.thumbnail_url,
-                    None,
-                    None,
-                ));
-            } else {
-                tasks.push(build_task(
-                    format!("{} - {}", platform_name, sanitize_name(&trimmed)),
-                    trimmed.clone(),
-                    Vec::new(),
-                    None,
-                    format!("{} Audio", platform_name),
-                    vec![platform_name.clone()],
-                    platform_name.clone(),
-                    None,
-                    None,
-                    None,
-                    None,
-                ));
+            let mut set_resolved = false;
+            if is_soundcloud_set(&url) {
+                emit_input_log(&context, &step, "Đang quét playlist SoundCloud...");
+                match resolve_soundcloud_set(
+                    context.ytdlp_path.as_path(),
+                    context.has_node,
+                    url.clone(),
+                    context.cookies_file.as_ref(),
+                    context.cookies_from_browser.as_deref(),
+                )
+                .await
+                {
+                    Ok(items) => {
+                        emit_input_log(
+                            &context,
+                            &step,
+                            &format!(
+                                "  {} Tìm thấy playlist SoundCloud với {} track",
+                                "✔".green().bold(),
+                                items.len()
+                            ),
+                        );
+                        let total_items = items.len() as u32;
+                        for (idx, item) in items.into_iter().enumerate() {
+                            tasks.push(build_soundcloud_set_task(
+                                item,
+                                (idx + 1) as u32,
+                                total_items,
+                            ));
+                        }
+                        set_resolved = true;
+                    }
+                    Err(e) => {
+                        emit_input_log(
+                            &context,
+                            &step,
+                            &format!(
+                                "  {} Không tách được playlist SoundCloud, tải như liên kết đơn: {}",
+                                "⚠".yellow(),
+                                e
+                            ),
+                        );
+                    }
+                }
+            }
+            if !set_resolved {
+                resolve_social_video(&context, &step, &url, &platform_name, &mut tasks).await;
             }
         }
         UrlType::DirectSearch(query) => {
@@ -804,9 +837,284 @@ async fn resolve_youtube_media(
     .map_err(|error| anyhow!("Không thể đọc media YouTube: {error}"))?
 }
 
+async fn resolve_social_video(
+    context: &ResolveContext,
+    step: &str,
+    url: &str,
+    platform_name: &str,
+    tasks: &mut Vec<DownloadTask>,
+) {
+    emit_input_log(
+        context,
+        step,
+        &format!("Đang lấy thông tin {}...", platform_name),
+    );
+    if let Ok(item) = resolve_youtube_media(
+        context.ytdlp_path.as_path(),
+        context.has_node,
+        url.to_string(),
+        platform_name.to_string(),
+        context.cookies_file.as_ref(),
+        context.cookies_from_browser.as_deref(),
+    )
+    .await
+    {
+        let cleaned_uploader = strip_channel_suffix(&item.uploader);
+        tasks.push(build_task(
+            format!("{} - {}", cleaned_uploader, item.title),
+            item.direct_url,
+            Vec::new(),
+            None,
+            item.title,
+            vec![cleaned_uploader],
+            platform_name.to_string(),
+            None,
+            item.thumbnail_url,
+            None,
+            None,
+        ));
+    } else {
+        tasks.push(build_task(
+            format!("{} - {}", platform_name, sanitize_name(url)),
+            url.to_string(),
+            Vec::new(),
+            None,
+            format!("{} Audio", platform_name),
+            vec![platform_name.to_string()],
+            platform_name.to_string(),
+            None,
+            None,
+            None,
+            None,
+        ));
+    }
+}
+
+fn soundcloud_last_path_segment(url: &str) -> Option<String> {
+    url::Url::parse(url.trim())
+        .ok()?
+        .path_segments()?
+        .rev()
+        .find(|segment| !segment.is_empty())
+        .map(|segment| segment.to_string())
+}
+
+fn soundcloud_first_path_segment(url: &str) -> Option<String> {
+    url::Url::parse(url.trim())
+        .ok()?
+        .path_segments()?
+        .find(|segment| !segment.is_empty())
+        .filter(|segment| !segment.eq_ignore_ascii_case("sets"))
+        .map(|segment| segment.to_string())
+}
+
+fn soundcloud_meta_or_default(value: &str, default: &str) -> String {
+    if value.is_empty() || value.eq_ignore_ascii_case("NA") {
+        default.to_string()
+    } else {
+        value.to_string()
+    }
+}
+
+fn soundcloud_entry_title(track_url: &str, fallback: &str) -> String {
+    match soundcloud_last_path_segment(track_url) {
+        Some(slug) if !slug.is_empty() && !slug.chars().all(|c| c.is_ascii_digit()) => {
+            slug.replace(['-', '_'], " ").trim().to_string()
+        }
+        Some(slug) => format!("Track {}", slug),
+        None => fallback.to_string(),
+    }
+}
+
+fn parse_soundcloud_set_line(line: &str) -> Option<(String, String, String)> {
+    let mut parts = line.split('\t');
+    let track_url = parts.next().unwrap_or("").trim().to_string();
+    let album = parts.next().unwrap_or("").trim().to_string();
+    let artist = parts.next().unwrap_or("").trim().to_string();
+    if track_url.is_empty()
+        || track_url.eq_ignore_ascii_case("NA")
+        || !track_url.starts_with("http")
+    {
+        return None;
+    }
+    Some((track_url, album, artist))
+}
+
+fn build_soundcloud_set_command(
+    ytdlp_path: &Path,
+    has_node: bool,
+    cookies_file: Option<&PathBuf>,
+    cookies_from_browser: Option<&str>,
+    url: &str,
+) -> Command {
+    let mut cmd = Command::new(ytdlp_path);
+    let mut args: Vec<String> = Vec::new();
+    if has_node {
+        args.push("--js-runtimes".to_string());
+        args.push("node".to_string());
+    }
+    args.push("--flat-playlist".to_string());
+    args.push("--socket-timeout".to_string());
+    args.push("15".to_string());
+    args.extend(YTDLP_DEFAULT_ARGS.iter().map(|s| s.to_string()));
+    if let Some(path) = cookies_file {
+        args.push("--cookies".to_string());
+        args.push(path.to_string_lossy().into_owned());
+    }
+    if let Some(browser) = cookies_from_browser {
+        args.push("--cookies-from-browser".to_string());
+        args.push(browser.to_string());
+    }
+    args.push("--print".to_string());
+    args.push("%(webpage_url)s\t%(album)s\t%(album_artist)s".to_string());
+    args.push("--".to_string());
+    args.push(url.to_string());
+    cmd.args(&args);
+    cmd.stdin(Stdio::null());
+    cmd
+}
+
+async fn resolve_soundcloud_set(
+    ytdlp_path: &Path,
+    has_node: bool,
+    url: String,
+    cookies_file: Option<&PathBuf>,
+    cookies_from_browser: Option<&str>,
+) -> Result<Vec<SoundCloudSetItem>> {
+    let default_artist =
+        soundcloud_first_path_segment(&url).unwrap_or_else(|| "SoundCloud".to_string());
+    let default_album = soundcloud_last_path_segment(&url)
+        .map(|slug| slug.replace(['-', '_'], " "))
+        .unwrap_or_else(|| "SoundCloud Set".to_string());
+    let path = ytdlp_path.to_path_buf();
+    let cookies_file = cookies_file.cloned();
+    let cookies_from_browser = cookies_from_browser.map(str::to_string);
+    let output = tokio::task::spawn_blocking(move || {
+        build_soundcloud_set_command(
+            &path,
+            has_node,
+            cookies_file.as_ref(),
+            cookies_from_browser.as_deref(),
+            &url,
+        )
+        .output()
+        .map_err(|error| anyhow!("Không thể chạy yt-dlp: {error}"))
+    })
+    .await
+    .map_err(|error| anyhow!("Không thể đọc playlist SoundCloud: {error}"))??;
+    if !output.status.success() {
+        let err = String::from_utf8_lossy(&output.stderr);
+        return Err(anyhow!("Lỗi khi lấy playlist SoundCloud: {}", err.trim()));
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let items: Vec<SoundCloudSetItem> = stdout
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .filter_map(parse_soundcloud_set_line)
+        .map(|(track_url, album, artist)| SoundCloudSetItem {
+            url: track_url,
+            album: soundcloud_meta_or_default(&album, &default_album),
+            artist: soundcloud_meta_or_default(&artist, &default_artist),
+        })
+        .collect();
+    if items.is_empty() {
+        return Err(anyhow!("Playlist SoundCloud không có track"));
+    }
+    Ok(items)
+}
+
+fn build_soundcloud_set_task(
+    item: SoundCloudSetItem,
+    track_number: u32,
+    total_tracks: u32,
+) -> DownloadTask {
+    let title = soundcloud_entry_title(&item.url, &item.album);
+    let display_title = format!("{} - {}", item.artist, title);
+    build_task(
+        display_title,
+        item.url,
+        vec![format!("ytsearch1:{} {}", item.artist, title)],
+        None,
+        title,
+        vec![item.artist],
+        item.album,
+        None,
+        None,
+        Some(track_number),
+        Some(total_tracks),
+    )
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{is_url_input, raw_title_from_url, spotify_fallback_searches};
+    use super::{is_soundcloud_set, is_url_input, raw_title_from_url, spotify_fallback_searches};
+    use super::{parse_soundcloud_set_line, soundcloud_entry_title};
+
+    #[test]
+    fn soundcloud_set_urls_are_detected_and_plain_links_rejected() {
+        assert!(is_soundcloud_set(
+            "https://soundcloud.com/forss/sets/soulhack"
+        ));
+        assert!(is_soundcloud_set(
+            "https://www.soundcloud.com/forss/sets/soulhack"
+        ));
+        assert!(is_soundcloud_set(
+            "https://soundcloud.com/user-123/sets/my-set?si=abc123"
+        ));
+        assert!(is_soundcloud_set(
+            "https://soundcloud.com//forss//sets//soulhack"
+        ));
+        assert!(!is_soundcloud_set(
+            "https://soundcloud.com/forss/flickermood"
+        ));
+        assert!(!is_soundcloud_set("https://soundcloud.com/forss"));
+        assert!(!is_soundcloud_set("https://soundcloud.com/forss/sets"));
+        assert!(!is_soundcloud_set(
+            "https://api-v2.soundcloud.com/tracks/295"
+        ));
+        assert!(!is_soundcloud_set(
+            "https://example.com/forss/sets/soulhack"
+        ));
+        assert!(!is_soundcloud_set("not a url"));
+        assert!(!is_soundcloud_set(""));
+    }
+
+    #[test]
+    fn soundcloud_set_line_parser_keeps_valid_entries_and_drops_bad_lines() {
+        let parsed =
+            parse_soundcloud_set_line("https://soundcloud.com/forss/flickermood\tSoulhack\tForss")
+                .expect("dòng hợp lệ phải được parse");
+        assert_eq!(parsed.0, "https://soundcloud.com/forss/flickermood");
+        assert_eq!(parsed.1, "Soulhack");
+        assert_eq!(parsed.2, "Forss");
+
+        let api_entry =
+            parse_soundcloud_set_line("https://api-v2.soundcloud.com/tracks/295\tNA\tNA")
+                .expect("entry api-v2 vẫn có URL hợp lệ");
+        assert_eq!(api_entry.0, "https://api-v2.soundcloud.com/tracks/295");
+        assert_eq!(api_entry.1, "NA");
+
+        assert!(parse_soundcloud_set_line("NA\tNA\tNA").is_none());
+        assert!(parse_soundcloud_set_line("").is_none());
+        assert!(parse_soundcloud_set_line("\t\t").is_none());
+    }
+
+    #[test]
+    fn soundcloud_entry_title_derives_slug_and_numbered_fallback() {
+        assert_eq!(
+            soundcloud_entry_title("https://soundcloud.com/forss/flickermood", "Soulhack"),
+            "flickermood"
+        );
+        assert_eq!(
+            soundcloud_entry_title("https://soundcloud.com/forss/city-ports", "Soulhack"),
+            "city ports"
+        );
+        assert_eq!(
+            soundcloud_entry_title("https://api-v2.soundcloud.com/tracks/295", "Soulhack"),
+            "Track 295"
+        );
+        assert_eq!(soundcloud_entry_title("NA", "Soulhack"), "Soulhack");
+    }
 
     #[test]
     fn spotify_fallback_searches_remove_duplicate_and_add_collab_target() {
@@ -896,6 +1204,7 @@ mod tests {
             cookies_from_browser: None,
             raw: true,
             fetch_lyrics: false,
+            duplicate_mode: "rename".to_string(),
         };
         let processor = BatchProcessor::new(
             settings,
@@ -943,6 +1252,7 @@ mod tests {
             cookies_from_browser: None,
             raw: true,
             fetch_lyrics: false,
+            duplicate_mode: "rename".to_string(),
         };
         let processor = BatchProcessor::new(
             settings,

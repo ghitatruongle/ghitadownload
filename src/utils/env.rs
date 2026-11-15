@@ -1,7 +1,8 @@
 use anyhow::{anyhow, bail, Context, Result};
-use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+
+use crate::utils::process::hide_console_window;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub const YTDLP_PINNED_VERSION: &str = "2026.10.26";
@@ -170,45 +171,78 @@ fn unique_path(directory: &Path, file_name: &str, label: &str) -> Result<PathBuf
     )))
 }
 
-fn powershell_path() -> Result<PathBuf> {
-    find_command("powershell")
-        .or_else(|| {
-            std::env::var_os("SystemRoot").map(|root| {
-                PathBuf::from(root)
-                    .join("System32")
-                    .join("WindowsPowerShell")
-                    .join("v1.0")
-                    .join("powershell.exe")
-            })
-        })
-        .and_then(|path| absolute_existing_file(&path))
-        .ok_or_else(|| anyhow!("Không tìm thấy PowerShell để tải công cụ phụ thuộc"))
-}
-
-fn ps_quote(value: &str) -> String {
-    format!("'{}'", value.replace('\'', "''"))
-}
-
-fn download_file(url: &str, destination: &Path) -> Result<Output> {
-    let clean_dest = strip_verbatim_prefix(destination);
-    let powershell = powershell_path()?;
-    let script = format!(
-        "$ErrorActionPreference='Stop'; $ProgressPreference='SilentlyContinue'; Invoke-WebRequest -UseBasicParsing -Uri {} -OutFile {}",
-        ps_quote(url),
-        ps_quote(&clean_dest.to_string_lossy())
-    );
-    let output = Command::new(powershell)
-        .args(["-NoProfile", "-NonInteractive", "-Command", &script])
-        .output()
-        .with_context(|| format!("Không thể chạy trình tải từ {url}"))?;
-    if !output.status.success() {
+pub async fn download_file_stream(url: &str, destination: &Path) -> Result<()> {
+    let client = crate::utils::http::download_client()?;
+    let mut response = crate::utils::http::with_retry(|| async {
+        let response = client.get(url).send().await?.error_for_status()?;
+        Ok(response)
+    })
+    .await
+    .with_context(|| format!("Không thể kết nối tới {url}"))?;
+    let destination = strip_verbatim_prefix(destination);
+    let parent = destination.parent().unwrap_or(Path::new(""));
+    if parent.as_os_str().is_empty() {
         bail!(
-            "Tải thất bại với HTTP/client status {}{}",
-            output.status,
-            process_error(&output)
+            "Đường dẫn đích tải về không hợp lệ: {}",
+            destination.display()
         );
     }
-    Ok(output)
+    let file_name = destination
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("download.bin");
+    let temporary = strip_verbatim_prefix(&unique_path(parent, file_name, "download")?);
+    let write_result = write_stream_to_file(&mut response, &temporary).await;
+    if let Err(error) = write_result {
+        let _ = std::fs::remove_file(&temporary);
+        return Err(error);
+    }
+    if let Err(error) = crate::utils::fs::replace_file(&temporary, &destination) {
+        let _ = std::fs::remove_file(&temporary);
+        bail!(
+            "Không thể thay thế {} bằng tệp vừa tải: {error}",
+            destination.display()
+        );
+    }
+    Ok(())
+}
+
+async fn write_stream_to_file(response: &mut reqwest::Response, temporary: &Path) -> Result<()> {
+    use tokio::io::AsyncWriteExt;
+    let mut file = tokio::fs::File::create(temporary)
+        .await
+        .with_context(|| format!("Không thể tạo tệp tạm: {}", temporary.display()))?;
+    let mut pending: Vec<u8> = Vec::with_capacity(64 * 1024);
+    while let Some(chunk) = response.chunk().await? {
+        pending.extend_from_slice(&chunk);
+        if pending.len() >= 64 * 1024 {
+            file.write_all(&pending).await?;
+            pending.clear();
+        }
+    }
+    if !pending.is_empty() {
+        file.write_all(&pending).await?;
+    }
+    file.flush().await?;
+    drop(file);
+    if std::fs::metadata(temporary).is_ok_and(|metadata| metadata.len() <= 1000) {
+        bail!(
+            "Tệp tải về quá nhỏ hoặc không hợp lệ (dưới 1KB): {}",
+            temporary.display()
+        );
+    }
+    Ok(())
+}
+
+pub(crate) fn block_on_download<F>(future: F) -> Result<F::Output>
+where
+    F: std::future::Future,
+{
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .with_context(|| "Không khởi tạo được runtime tải xuống")?;
+    Ok(runtime.block_on(future))
 }
 
 fn process_error(output: &Output) -> String {
@@ -253,7 +287,7 @@ fn verify_sha256(path: &Path, expected: &str) -> Result<()> {
 }
 
 fn tool_version(path: &Path) -> Result<String> {
-    let mut output = Command::new(path)
+    let mut output = hide_console_window(Command::new(path))
         .arg("--version")
         .output()
         .with_context(|| format!("Không thể chạy {}", path.display()))?;
@@ -280,18 +314,6 @@ fn tool_version(path: &Path) -> Result<String> {
         bail!("{} không trả về phiên bản hợp lệ", path.display());
     }
     Ok(version)
-}
-
-fn configured_url(
-    runtime: Option<OsString>,
-    compile_time: Option<&'static str>,
-    fallback: &str,
-) -> String {
-    runtime
-        .and_then(|value| value.into_string().ok())
-        .filter(|value| value.starts_with("https://"))
-        .or_else(|| compile_time.map(str::to_string))
-        .unwrap_or_else(|| fallback.to_string())
 }
 
 pub async fn install_ffmpeg_auto() -> Result<PathBuf> {
@@ -467,23 +489,121 @@ fn verify_zip_sha256(path: &Path, expected: &str) -> Result<()> {
     Ok(())
 }
 
+struct YtdlpManifest {
+    #[allow(dead_code)]
+    version: String,
+    url: String,
+    sha256: String,
+}
+
+fn is_valid_sha256(value: &str) -> bool {
+    value.len() == 64 && value.chars().all(|c| c.is_ascii_hexdigit())
+}
+
+fn parse_ytdlp_manifest(payload: &str) -> Result<YtdlpManifest> {
+    let value: serde_json::Value = serde_json::from_str(payload)
+        .with_context(|| "Manifest yt-dlp.json không phải JSON hợp lệ")?;
+    let read_field = |name: &str| -> Result<String> {
+        value
+            .get(name)
+            .and_then(|field| field.as_str())
+            .map(str::trim)
+            .filter(|field| !field.is_empty())
+            .map(str::to_string)
+            .ok_or_else(|| anyhow!("Manifest yt-dlp.json thiếu hoặc sai trường {name}"))
+    };
+    let version = read_field("version")?;
+    let url = read_field("url")?;
+    let sha256 = read_field("sha256")?;
+    if !url.starts_with("https://") {
+        bail!("Manifest yt-dlp.json có url không phải https://: {url}");
+    }
+    if !is_valid_sha256(&sha256) {
+        bail!("Manifest yt-dlp.json có sha256 không hợp lệ (cần 64 ký tự hex)");
+    }
+    Ok(YtdlpManifest {
+        version,
+        url,
+        sha256,
+    })
+}
+
+fn find_ytdlp_manifest(binary_path: &Path) -> Option<PathBuf> {
+    let mut candidates = Vec::new();
+    if let Some(parent) = binary_path.parent() {
+        candidates.push(parent.join("yt-dlp.json"));
+    }
+    if let Ok(exe_path) = std::env::current_exe() {
+        if let Some(parent) = exe_path.parent() {
+            candidates.push(parent.join("yt-dlp.json"));
+        }
+    }
+    candidates.into_iter().find(|candidate| candidate.is_file())
+}
+
+fn load_ytdlp_manifest(binary_path: &Path) -> Result<Option<YtdlpManifest>> {
+    let Some(manifest_path) = find_ytdlp_manifest(binary_path) else {
+        return Ok(None);
+    };
+    let payload = match std::fs::read_to_string(&manifest_path) {
+        Ok(payload) => payload,
+        Err(error) => bail!(
+            "Không thể đọc manifest yt-dlp.json {}: {error}",
+            manifest_path.display()
+        ),
+    };
+    let manifest = match parse_ytdlp_manifest(&payload) {
+        Ok(manifest) => manifest,
+        Err(error) => bail!("yt-dlp.json không hợp lệ, chặn cập nhật (fail-closed): {error}"),
+    };
+    Ok(Some(manifest))
+}
+
+fn resolve_ytdlp_source(
+    manifest: Option<&YtdlpManifest>,
+    env_url: Option<&str>,
+    env_sha256: Option<&str>,
+) -> Result<(String, String)> {
+    let pinned = match manifest {
+        Some(entry) => (entry.url.clone(), entry.sha256.clone()),
+        None => (
+            YTDLP_FALLBACK_URL.to_string(),
+            YTDLP_FALLBACK_SHA256.to_string(),
+        ),
+    };
+    let Some(url) = env_url else {
+        return Ok(pinned);
+    };
+    let url = url.trim().to_string();
+    if !url.starts_with("https://") {
+        bail!(
+            "GHITA_YTDLP_SOURCE_URL chỉ chấp nhận địa chỉ https://, nhận được: {url}. Chính sách fail-closed: từ chối tải yt-dlp từ nguồn không an toàn."
+        );
+    }
+    let Some(expected_sha256) = env_sha256 else {
+        bail!(
+            "GHITA_YTDLP_SOURCE_URL đã được đặt nhưng thiếu GHITA_YTDLP_SHA256 (64 ký tự hex). Chính sách fail-closed: không tải yt-dlp khi không có SHA-256 để xác thực."
+        );
+    };
+    let expected_sha256 = expected_sha256.trim().to_string();
+    if !is_valid_sha256(&expected_sha256) {
+        bail!(
+            "GHITA_YTDLP_SHA256 không hợp lệ (cần đúng 64 ký tự hex). Chính sách fail-closed: không tải yt-dlp khi SHA-256 không xác thực được."
+        );
+    }
+    Ok((url, expected_sha256))
+}
+
 pub fn update_ytdlp(ytdlp_path: &Path) -> Result<String> {
     let clean_path = strip_verbatim_prefix(ytdlp_path);
     if !clean_path.is_absolute() {
         bail!("Đường dẫn cập nhật yt-dlp phải là đường dẫn tuyệt đối");
     }
-    if let Ok(output) = Command::new(&clean_path).arg("--update").output() {
-        if output.status.success() {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            let version = tool_version(&clean_path).unwrap_or_else(|_| "mới nhất".to_string());
-            let summary = stdout
-                .lines()
-                .map(str::trim)
-                .find(|l| !l.is_empty())
-                .unwrap_or("yt-dlp đã được cập nhật thành công.");
-            return Ok(format!("{summary} (Phiên bản: {version})"));
-        }
-    }
+    let manifest = load_ytdlp_manifest(&clean_path)?;
+    let env_url = std::env::var("GHITA_YTDLP_SOURCE_URL").ok();
+    let env_sha256 = std::env::var("GHITA_YTDLP_SHA256").ok();
+    let (url, expected_sha256) =
+        resolve_ytdlp_source(manifest.as_ref(), env_url.as_deref(), env_sha256.as_deref())?;
     let parent = clean_path.parent().ok_or_else(|| {
         anyhow!(
             "Không xác định được thư mục cài đặt yt-dlp: {}",
@@ -492,26 +612,17 @@ pub fn update_ytdlp(ytdlp_path: &Path) -> Result<String> {
     })?;
     let temporary = unique_path(parent, "yt-dlp", "yt-dlp")?.with_extension("exe");
     let temporary = strip_verbatim_prefix(&temporary);
-    let url = configured_url(
-        std::env::var_os("GHITA_YTDLP_SOURCE_URL"),
-        option_env!("GHITA_YTDLP_SOURCE_URL"),
-        YTDLP_FALLBACK_URL,
-    );
-    let expected_sha256 = std::env::var("GHITA_YTDLP_SHA256")
-        .ok()
-        .filter(|value| value.len() == 64)
-        .unwrap_or_else(|| YTDLP_FALLBACK_SHA256.to_string());
-    let result = (|| -> Result<String> {
-        download_file(&url, &temporary)?;
+    let result = block_on_download(async {
+        download_file_stream(&url, &temporary).await?;
         verify_sha256(&temporary, &expected_sha256)?;
         validate_tool(&temporary, "yt-dlp tải về")?;
         let version = tool_version(&temporary)?;
         crate::utils::fs::replace_file(&temporary, &clean_path)
             .with_context(|| format!("Không thể cài {}", clean_path.display()))?;
-        Ok(version)
-    })();
+        Ok::<String, anyhow::Error>(version)
+    });
     let _ = std::fs::remove_file(&temporary);
-    let version = result?;
+    let version = result??;
     validate_tool(&clean_path, "yt-dlp")?;
     Ok(format!(
         "Đã cập nhật yt-dlp {} từ nguồn đã cấu hình.",
@@ -532,17 +643,21 @@ pub fn parse_github_latest_tag(payload: &str) -> Result<String> {
 }
 
 pub fn version_is_newer(candidate: &str, baseline: &str) -> bool {
-    let parse_parts = |version: &str| -> Option<Vec<u64>> {
-        version
-            .trim()
-            .trim_start_matches('v')
+    fn split_version(version: &str) -> (Option<Vec<u64>>, bool) {
+        let trimmed = version.trim().trim_start_matches('v');
+        let (core, prerelease) = match trimmed.split_once('-') {
+            Some((core, suffix)) => (core, !suffix.is_empty()),
+            None => (trimmed, false),
+        };
+        let parts: Option<Vec<u64>> = core
             .split('.')
             .map(|part| part.parse::<u64>().ok())
-            .collect()
-    };
-    let (Some(candidate_parts), Some(baseline_parts)) =
-        (parse_parts(candidate), parse_parts(baseline))
-    else {
+            .collect();
+        (parts, prerelease)
+    }
+    let (candidate_parts, candidate_pre) = split_version(candidate);
+    let (baseline_parts, baseline_pre) = split_version(baseline);
+    let (Some(candidate_parts), Some(baseline_parts)) = (candidate_parts, baseline_parts) else {
         let candidate = candidate.trim();
         let baseline = baseline.trim();
         return candidate != baseline && candidate > baseline;
@@ -554,7 +669,7 @@ pub fn version_is_newer(candidate: &str, baseline: &str) -> bool {
             return left > right;
         }
     }
-    false
+    baseline_pre && !candidate_pre
 }
 
 pub async fn fetch_latest_ytdlp_version() -> Result<String> {
@@ -578,17 +693,6 @@ mod tests {
         parse_github_latest_tag, version_is_newer, FFMPEG_FALLBACK_SHA256, FFMPEG_FALLBACK_URL,
         YTDLP_FALLBACK_SHA256, YTDLP_FALLBACK_URL, YTDLP_PINNED_VERSION,
     };
-
-    #[test]
-    fn ps_quote_escapes_single_quotes_for_inline_scripts() {
-        use super::ps_quote;
-        assert_eq!(
-            ps_quote("https://example.com/a.zip"),
-            "'https://example.com/a.zip'"
-        );
-        assert_eq!(ps_quote("it's here"), "'it''s here'");
-        assert_eq!(ps_quote(""), "''");
-    }
 
     #[test]
     fn parse_github_latest_tag_reads_top_level_tag_name() {
@@ -616,6 +720,12 @@ mod tests {
         assert!(version_is_newer("2026.08.19.1", "2026.08.19"));
         assert!(!version_is_newer("2026.08.19", "2026.08.19.1"));
         assert!(version_is_newer("2026.9.2", "2026.08.19"));
+        assert!(version_is_newer("0.0.7", "0.0.6"));
+        assert!(!version_is_newer("0.0.6-preview", "0.0.6"));
+        assert!(!version_is_newer("0.0.6-beta", "0.0.6"));
+        assert!(version_is_newer("0.0.6", "0.0.6-preview"));
+        assert!(version_is_newer("0.0.7-preview", "0.0.6"));
+        assert!(version_is_newer("v0.0.7", "0.0.6"));
         assert!(version_is_newer("v2026.09.27", "2026.08.19"));
     }
 
@@ -656,5 +766,92 @@ mod tests {
             strip_verbatim_prefix(Path::new(r"C:\Users\Acer\bin\tool.exe")),
             PathBuf::from(r"C:\Users\Acer\bin\tool.exe")
         );
+    }
+
+    #[test]
+    fn parse_ytdlp_manifest_accepts_release_schema() {
+        use super::parse_ytdlp_manifest;
+        let payload = r#"{"version":"2026.10.26","url":"https://github.com/yt-dlp/yt-dlp/releases/download/2026.10.26/yt-dlp.exe","sha256":"f5389d3698ecde4ef06f4e6b1ce0294fe9ac1396228c8990b8d3416d6d177a7d"}"#;
+        let manifest = parse_ytdlp_manifest(payload).unwrap();
+        assert_eq!(manifest.version, "2026.10.26");
+        assert_eq!(
+            manifest.url,
+            "https://github.com/yt-dlp/yt-dlp/releases/download/2026.10.26/yt-dlp.exe"
+        );
+        assert_eq!(
+            manifest.sha256,
+            "f5389d3698ecde4ef06f4e6b1ce0294fe9ac1396228c8990b8d3416d6d177a7d"
+        );
+    }
+
+    #[test]
+    fn parse_ytdlp_manifest_rejects_invalid_payloads() {
+        use super::parse_ytdlp_manifest;
+        let missing_sha256 = r#"{"version":"1","url":"https://x/y.exe"}"#;
+        let missing_url = r#"{"version":"1","sha256":"abc"}"#;
+        let missing_version = r#"{"url":"https://x/y.exe","sha256":"abc"}"#;
+        let empty_version = r#"{"version":"","url":"https://x/y.exe","sha256":""}"#;
+        let http_url = r#"{"version":"1","url":"http://x/y.exe","sha256":"abc"}"#;
+        let short_sha = r#"{"version":"1","url":"https://x/y.exe","sha256":"abc"}"#;
+        let non_hex_sha = r#"{"version":"1","url":"https://x/y.exe","sha256":"zz"}"#;
+        assert!(parse_ytdlp_manifest("not json").is_err());
+        assert!(parse_ytdlp_manifest(missing_sha256).is_err());
+        assert!(parse_ytdlp_manifest(missing_url).is_err());
+        assert!(parse_ytdlp_manifest(missing_version).is_err());
+        assert!(parse_ytdlp_manifest(empty_version).is_err());
+        assert!(parse_ytdlp_manifest(http_url).is_err());
+        assert!(parse_ytdlp_manifest(short_sha).is_err());
+        assert!(parse_ytdlp_manifest(non_hex_sha).is_err());
+    }
+
+    #[test]
+    fn resolve_ytdlp_source_uses_manifest_then_pinned_constants() {
+        use super::{resolve_ytdlp_source, YtdlpManifest};
+        let manifest = YtdlpManifest {
+            version: "2026.10.26".to_string(),
+            url: "https://mirror.example.com/yt-dlp.exe".to_string(),
+            sha256: "a".repeat(64),
+        };
+        let resolved = resolve_ytdlp_source(Some(&manifest), None, None);
+        let (url, sha256) = resolved.unwrap();
+        assert_eq!(url, "https://mirror.example.com/yt-dlp.exe");
+        assert_eq!(sha256, "a".repeat(64));
+        let resolved = resolve_ytdlp_source(None, None, None);
+        let (url, sha256) = resolved.unwrap();
+        assert_eq!(url, YTDLP_FALLBACK_URL);
+        assert_eq!(sha256, YTDLP_FALLBACK_SHA256);
+    }
+
+    #[test]
+    fn resolve_ytdlp_source_env_override_requires_matching_sha256() {
+        use super::{resolve_ytdlp_source, YtdlpManifest};
+        let manifest = YtdlpManifest {
+            version: "2026.10.26".to_string(),
+            url: "https://mirror.example.com/yt-dlp.exe".to_string(),
+            sha256: "a".repeat(64),
+        };
+        let override_url = "https://override.example.com/yt-dlp.exe";
+        let sha = "b".repeat(64);
+        let res = resolve_ytdlp_source(Some(&manifest), Some(override_url), Some(sha.as_str()));
+        let (url, sha256) = res.unwrap();
+        assert_eq!(url, override_url);
+        assert_eq!(sha256, sha);
+        let missing_sha = resolve_ytdlp_source(Some(&manifest), Some(override_url), None);
+        assert!(missing_sha.is_err());
+        let bad_sha = resolve_ytdlp_source(Some(&manifest), Some(override_url), Some("xyz"));
+        assert!(bad_sha.is_err());
+        let insecure_url = "http://insecure.example.com/yt-dlp.exe";
+        let insecure = resolve_ytdlp_source(None, Some(insecure_url), Some(sha.as_str()));
+        assert!(insecure.is_err());
+    }
+
+    #[test]
+    fn resolve_ytdlp_source_ignores_sha256_without_url() {
+        use super::resolve_ytdlp_source;
+        let stray_sha = "c".repeat(64);
+        let resolved = resolve_ytdlp_source(None, None, Some(stray_sha.as_str()));
+        let (url, sha256) = resolved.unwrap();
+        assert_eq!(url, YTDLP_FALLBACK_URL);
+        assert_eq!(sha256, YTDLP_FALLBACK_SHA256);
     }
 }

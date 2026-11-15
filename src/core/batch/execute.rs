@@ -9,6 +9,7 @@ use tokio::sync::Semaphore;
 use tokio::task::{JoinError, JoinSet};
 
 use crate::core::cancel::{global, Cancellation};
+use crate::core::config::DownloadSettings;
 use crate::core::tagger::Tagger;
 use crate::utils::file_helper::ensure_dir;
 
@@ -19,6 +20,25 @@ use super::{
 };
 
 const PENDING_WRITE_EVERY: usize = 15;
+
+fn is_youtube_source_target(target: &str) -> bool {
+    let normalized = target.trim().to_ascii_lowercase();
+    normalized.starts_with("ytsearch")
+        || normalized.starts_with("https://www.youtube.com/")
+        || normalized.starts_with("https://music.youtube.com/")
+        || normalized.starts_with("https://youtu.be/")
+        || normalized.starts_with("https://m.youtube.com/")
+        || normalized.starts_with("https://www.youtu.be/")
+}
+
+fn batch_should_warn_youtube_quality(settings: &DownloadSettings, tasks: &[DownloadTask]) -> bool {
+    if settings.cookies_file.is_some() || settings.cookies_from_browser.is_some() {
+        return false;
+    }
+    tasks
+        .iter()
+        .any(|task| is_youtube_source_target(&task.source_or_search))
+}
 
 static TOTAL_BAR_STYLE: LazyLock<ProgressStyle> = LazyLock::new(|| {
     ProgressStyle::default_bar()
@@ -58,6 +78,43 @@ impl BatchProcessor {
             self.settings.concurrency.to_string().yellow().bold(),
             clean_output_dir.display().to_string().yellow()
         );
+
+        if batch_should_warn_youtube_quality(&self.settings, tasks) {
+            println!(
+                "{}",
+                "ℹ️  YouTube không dùng cookie: YouTube có thể giới hạn chất lượng audio ~128–160 kbps — dùng --cookies để mở khóa chất lượng cao hơn.".yellow()
+            );
+        }
+
+        if let Some(free) = crate::utils::fs::drive_free_bytes(&clean_output_dir) {
+            if let Some(warning) = crate::utils::fs::free_space_warning(free) {
+                println!("{}", warning.yellow());
+                crate::utils::logger::log_line(&format!("low disk: {free} bytes free"));
+            }
+        }
+
+        if let Some(cookies) = &self.settings.cookies_file {
+            if cookies.is_file() {
+                if let Some(warning) = crate::utils::file_helper::cookie_acl_warning(cookies) {
+                    println!("{}", warning.yellow());
+                    crate::utils::logger::log_line("cookie acl warning shown");
+                }
+            }
+        }
+
+        let removed_parts = crate::utils::file_helper::remove_stale_part_files(
+            &clean_output_dir,
+            std::time::Duration::from_secs(crate::utils::file_helper::STALE_PART_MAX_AGE_SECS),
+        );
+        if removed_parts > 0 {
+            println!(
+                "{}",
+                format!(
+                    "  🧹 Đã dọn {removed_parts} file .part cũ hơn 24 giờ (sẽ tải lại từ đầu)."
+                )
+                .yellow()
+            );
+        }
 
         let concurrency = if self.settings.concurrency == 0 {
             DEFAULT_CONCURRENCY
@@ -373,11 +430,113 @@ fn create_execution_temp_dir(output_dir: &Path) -> Result<PathBuf> {
 mod tests {
     use super::indexed_spawn;
     use super::TOTAL_BAR_STYLE;
+    use crate::core::batch::DownloadTask;
 
     #[test]
     fn total_bar_style_template_parses_and_clones() {
         let style = TOTAL_BAR_STYLE.clone();
         let _ = style.get_tick_str(0);
+    }
+
+    fn notice_test_task(source: &str) -> DownloadTask {
+        DownloadTask {
+            display_title: source.to_string(),
+            source_or_search: source.to_string(),
+            fallback_searches: Vec::new(),
+            expected_duration_secs: None,
+            metadata: crate::core::tagger::AudioMetadata {
+                title: "t".to_string(),
+                artists: Vec::new(),
+                album: String::new(),
+                release_year: None,
+                cover_url: None,
+                track_number: None,
+                total_tracks: None,
+                lyrics: None,
+            },
+        }
+    }
+
+    fn notice_test_settings(
+        cookies_file: Option<std::path::PathBuf>,
+        cookies_from_browser: Option<&str>,
+    ) -> crate::core::config::DownloadSettings {
+        crate::core::config::DownloadSettings {
+            output_dir: std::env::temp_dir(),
+            format: crate::core::config::AudioFormat::Mp3,
+            quality: None,
+            video_resolution: None,
+            concurrency: 3,
+            keep_accents: false,
+            cookies_file,
+            cookies_from_browser: cookies_from_browser.map(str::to_string),
+            raw: false,
+            fetch_lyrics: false,
+            duplicate_mode: "rename".to_string(),
+        }
+    }
+
+    #[test]
+    fn is_youtube_source_target_matches_youtube_searches_and_links() {
+        use super::is_youtube_source_target;
+
+        assert!(is_youtube_source_target("ytsearch1:bai hat"));
+        assert!(is_youtube_source_target(
+            "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+        ));
+        assert!(is_youtube_source_target(
+            "https://music.youtube.com/playlist?list=PL123"
+        ));
+        assert!(is_youtube_source_target("https://youtu.be/dQw4w9WgXcQ"));
+        assert!(is_youtube_source_target(
+            "https://m.youtube.com/watch?v=dQw4w9WgXcQ"
+        ));
+        assert!(!is_youtube_source_target(
+            "https://soundcloud.com/forss/sets/soulhack"
+        ));
+        assert!(!is_youtube_source_target(
+            "https://www.tiktok.com/@user/video/1"
+        ));
+        assert!(!is_youtube_source_target(
+            "suno:3b494117-f372-450e-9c5c-2e48b38e5241"
+        ));
+        assert!(!is_youtube_source_target(""));
+    }
+
+    #[test]
+    fn youtube_quality_notice_only_without_cookies_and_only_for_youtube_sources() {
+        use super::batch_should_warn_youtube_quality;
+
+        let settings = notice_test_settings(None, None);
+        let youtube_tasks = vec![
+            notice_test_task("https://soundcloud.com/a/b"),
+            notice_test_task("ytsearch1:co nhac"),
+        ];
+        assert!(batch_should_warn_youtube_quality(&settings, &youtube_tasks));
+
+        let music_tasks = vec![notice_test_task(
+            "https://music.youtube.com/watch?v=dQw4w9WgXcQ",
+        )];
+        assert!(batch_should_warn_youtube_quality(&settings, &music_tasks));
+
+        let other_tasks = vec![
+            notice_test_task("https://www.tiktok.com/@user/video/1"),
+            notice_test_task("suno:3b494117-f372-450e-9c5c-2e48b38e5241"),
+        ];
+        assert!(!batch_should_warn_youtube_quality(&settings, &other_tasks));
+
+        let file_cookies =
+            notice_test_settings(Some(std::path::PathBuf::from("cookies.txt")), None);
+        assert!(!batch_should_warn_youtube_quality(
+            &file_cookies,
+            &youtube_tasks
+        ));
+
+        let browser_cookies = notice_test_settings(None, Some("chrome"));
+        assert!(!batch_should_warn_youtube_quality(
+            &browser_cookies,
+            &youtube_tasks
+        ));
     }
 
     #[tokio::test]

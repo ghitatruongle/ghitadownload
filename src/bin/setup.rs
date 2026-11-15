@@ -3,6 +3,7 @@ use std::ffi::OsStr;
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 #[cfg(windows)]
 use winreg::enums::{RegType, HKEY_CURRENT_USER, KEY_READ, KEY_WRITE};
@@ -33,6 +34,8 @@ fn enable_utf8_console() {
 struct SetupArgs {
     uninstall: bool,
     silent: bool,
+    update_app: bool,
+    rollback: bool,
     install_dir: Option<PathBuf>,
 }
 
@@ -57,6 +60,18 @@ where
                     return Err("Không được lặp lại --silent".to_string());
                 }
                 parsed.silent = true;
+            }
+            "--update-app" => {
+                if parsed.update_app {
+                    return Err("Không được lặp lại --update-app".to_string());
+                }
+                parsed.update_app = true;
+            }
+            "--rollback" => {
+                if parsed.rollback {
+                    return Err("Không được lặp lại --rollback".to_string());
+                }
+                parsed.rollback = true;
             }
             "--install-dir" => {
                 let raw = iterator
@@ -86,17 +101,28 @@ where
     if parsed.uninstall && parsed.silent {
         return Err("--uninstall không được kết hợp --silent".to_string());
     }
+    if parsed.uninstall && parsed.update_app {
+        return Err("--uninstall không được kết hợp --update-app".to_string());
+    }
+    if parsed.uninstall && parsed.rollback {
+        return Err("--uninstall không được kết hợp --rollback".to_string());
+    }
+    if parsed.update_app && parsed.rollback {
+        return Err("--update-app không được kết hợp --rollback".to_string());
+    }
     Ok(parsed)
 }
 
 fn main() {
+    ghita_download::utils::crash::install_panic_hook();
+    ghita_download::utils::crash::install_shutdown_handlers();
     enable_utf8_console();
     let args = match parse_args(std::env::args_os().skip(1)) {
         Ok(args) => args,
         Err(message) => {
             eprintln!("❌ {message}");
             eprintln!(
-                "Cú pháp: --install-dir <DIR> [--silent] | --uninstall [--install-dir <DIR>]"
+                "Cú pháp: --install-dir <DIR> [--silent] | --uninstall [--install-dir <DIR>] | --update-app [--install-dir <DIR>] | --rollback [--install-dir <DIR>]"
             );
             std::process::exit(2);
         }
@@ -109,7 +135,11 @@ fn main() {
     let default_install_dir = dirs::data_local_dir()
         .map(|dir| dir.join("GhitaDownload"))
         .unwrap_or_else(|| PathBuf::from(r"C:\GhitaDownload"));
-    let result = if args.uninstall {
+    let result = if args.rollback {
+        handle_rollback(&args, &default_install_dir)
+    } else if args.update_app {
+        handle_update_app(&args, &default_install_dir)
+    } else if args.uninstall {
         let install_dir = args
             .install_dir
             .unwrap_or_else(|| persisted_install_dir().unwrap_or(default_install_dir));
@@ -260,6 +290,7 @@ fn handle_install(default_dir: &Path, args: &SetupArgs) -> Result<(), String> {
         .map(|path| path.with_extension("txt.stage"));
 
     println!("📦 Đang cài đặt tệp thực thi chính (ghitadownload.exe)...");
+    backup_previous_app(&app_path);
     if !EMBEDDED_APP.is_empty() && EMBEDDED_APP != b"NO_EMBED" {
         write_atomic(&app_path, EMBEDDED_APP)?;
     } else if let Some(source) = find_local_app() {
@@ -334,6 +365,187 @@ fn handle_install(default_dir: &Path, args: &SetupArgs) -> Result<(), String> {
     Ok(())
 }
 
+fn resolve_install_dir(args: &SetupArgs, default_dir: &Path) -> PathBuf {
+    if let Some(dir) = args.install_dir.clone() {
+        return dir;
+    }
+    if let Some(dir) = persisted_install_dir() {
+        return dir;
+    }
+    default_dir.to_path_buf()
+}
+
+fn handle_update_app(args: &SetupArgs, default_dir: &Path) -> Result<(), String> {
+    let install_dir = resolve_install_dir(args, default_dir);
+    let app_path = install_dir.join("ghitadownload.exe");
+    let embedded_version = env!("CARGO_PKG_VERSION");
+    if !app_path.is_file() {
+        println!(
+            "ℹ️  Chưa tìm thấy bản cài đặt tại {}. Tiến hành cài đặt mới...",
+            install_dir.display()
+        );
+        return install_silently(&install_dir);
+    }
+    let Some(installed_version) = read_exe_version(&app_path) else {
+        println!(
+            "ℹ️  Không đọc được phiên bản của {}. Tiến hành cài đặt lại...",
+            app_path.display()
+        );
+        return install_silently(&install_dir);
+    };
+    if ghita_download::utils::env::version_is_newer(embedded_version, &installed_version) {
+        println!(
+            "⬆️  Đang cập nhật từ {} lên {}...",
+            installed_version, embedded_version
+        );
+        install_silently(&install_dir)?;
+        println!(
+            "⬆️  Đã cập nhật {} → {}",
+            installed_version, embedded_version
+        );
+    } else if ghita_download::utils::env::version_is_newer(&installed_version, embedded_version) {
+        println!(
+            "⚠️  Bản đã cài ({}) mới hơn bản cài đặt này ({}). Giữ nguyên, không thay đổi.",
+            installed_version, embedded_version
+        );
+    } else {
+        println!("✅ Bạn đang dùng bản mới nhất ({})", installed_version);
+    }
+    Ok(())
+}
+
+fn install_silently(install_dir: &Path) -> Result<(), String> {
+    let silent_args = SetupArgs {
+        uninstall: false,
+        silent: true,
+        update_app: false,
+        rollback: false,
+        install_dir: Some(install_dir.to_path_buf()),
+    };
+    handle_install(install_dir, &silent_args)
+}
+
+fn handle_rollback(args: &SetupArgs, default_dir: &Path) -> Result<(), String> {
+    let install_dir = resolve_install_dir(args, default_dir);
+    validate_install_dir(&install_dir)?;
+    let Some((prev_path, app_path)) = rollback_plan(&install_dir) else {
+        return Err("Không có bản trước đó để phục hồi".to_string());
+    };
+    let current_version = exe_version_label(&app_path);
+    let restore_version = exe_version_label(&prev_path);
+    println!(
+        "⏳ Đang phục hồi ghitadownload từ {} về {}...",
+        current_version, restore_version
+    );
+    swap_app_with_prev(&app_path, &prev_path)?;
+    copy_required_file(&app_path, &install_dir.join("ghita.exe"))?;
+    println!(
+        "✅ Đã phục hồi thành công: {} → {}",
+        current_version, restore_version
+    );
+    Ok(())
+}
+
+fn rollback_plan(install_dir: &Path) -> Option<(PathBuf, PathBuf)> {
+    let app_path = install_dir.join("ghitadownload.exe");
+    let prev_path = install_dir.join("ghitadownload.prev.exe");
+    prev_path.is_file().then_some((prev_path, app_path))
+}
+
+fn swap_app_with_prev(app_path: &Path, prev_path: &Path) -> Result<(), String> {
+    if !app_path.is_file() {
+        return match std::fs::rename(prev_path, app_path) {
+            Ok(()) => Ok(()),
+            Err(error) => Err(format!(
+                "Không phục hồi được {}: {error}",
+                app_path.display()
+            )),
+        };
+    }
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let staging = app_path.with_file_name(format!(
+        "ghitadownload.exe.swap.{}.{}.tmp",
+        std::process::id(),
+        stamp
+    ));
+    if std::fs::rename(app_path, &staging).is_err() {
+        return Err(format!(
+            "Không tách được bản hiện tại: {}",
+            app_path.display()
+        ));
+    }
+    if let Err(error) = std::fs::rename(prev_path, app_path) {
+        let _ = std::fs::rename(&staging, app_path);
+        return Err(format!(
+            "Không phục hồi được {}: {error}",
+            app_path.display()
+        ));
+    }
+    if let Err(error) = std::fs::rename(&staging, prev_path) {
+        println!("⚠️  Không giữ được bản cũ {}: {error}", prev_path.display());
+    }
+    Ok(())
+}
+
+fn backup_previous_app(app_path: &Path) {
+    if !app_path.is_file() {
+        return;
+    }
+    let prev_path = app_path.with_file_name("ghitadownload.prev.exe");
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let staging = app_path.with_file_name(format!(
+        ".ghitadownload.prev.{}.{}.tmp",
+        std::process::id(),
+        stamp
+    ));
+    let copied = std::fs::copy(app_path, &staging);
+    let result = match copied {
+        Ok(_) => ghita_download::utils::fs::replace_file(&staging, &prev_path),
+        Err(error) => Err(error),
+    };
+    match result {
+        Ok(_) => println!("💾 Đã giữ bản cũ tại {}", prev_path.display()),
+        Err(error) => println!(
+            "⚠️  Không tạo được bản lưu trữ {}: {error}",
+            prev_path.display()
+        ),
+    }
+    let _ = fs::remove_file(&staging);
+}
+
+fn read_exe_version(path: &Path) -> Option<String> {
+    let output = ghita_download::utils::process::hide_console_window(Command::new(path))
+        .arg("--version")
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    parse_version_output(&String::from_utf8_lossy(&output.stdout))
+}
+
+fn exe_version_label(path: &Path) -> String {
+    match read_exe_version(path) {
+        Some(version) => version,
+        None => "không xác định".to_string(),
+    }
+}
+
+fn parse_version_output(output: &str) -> Option<String> {
+    output
+        .lines()
+        .rev()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .and_then(|line| line.split_whitespace().last().map(str::to_string))
+}
+
 fn strip_verbatim_prefix(path: &Path) -> PathBuf {
     let s = path.to_string_lossy();
     if let Some(stripped) = s.strip_prefix(r"\\?\UNC\") {
@@ -357,7 +569,7 @@ fn find_existing_tool(path: &Path) -> Option<PathBuf> {
 fn build_uninstall_script(install_dir: &Path) -> String {
     let dir_literal = install_dir.to_string_lossy().replace('\'', "''");
     format!(
-        "@echo off\r\nsetlocal\r\npowershell -NoProfile -ExecutionPolicy Bypass -Command \"$dir=[IO.Path]::GetFullPath('{}'); $p=[Environment]::GetEnvironmentVariable('Path','User'); if ($null -eq $p) {{ exit 2 }}; $root=$dir.TrimEnd('\\'); $n=($p -split ';' | Where-Object {{ $cur=$_.Replace('/','\\'); $cur -and $cur.TrimEnd('\\') -ne $root -and $cur.TrimEnd('\\') -ne ($root + '\\bin').TrimEnd('\\') }}) -join ';'; [Environment]::SetEnvironmentVariable('Path',$n,'User')\"\r\nif errorlevel 1 exit /b 1\r\nfor %%F in (\"%~dp0ghita_config.json\" \"%LOCALAPPDATA%\\GhitaDownload\\ghita_config.json\") do if exist %%F del /q %%F 2>nul\r\ndel /q \"%~dp0ghitadownload.exe\" 2>nul\r\ndel /q \"%~dp0ghita.exe\" 2>nul\r\ndel /q \"%~dp0uninstall.bat\" 2>nul\r\ndel /q \"%~dp0bin\\yt-dlp.exe\" 2>nul\r\ndel /q \"%~dp0bin\\ffmpeg.exe\" 2>nul\r\nrd \"%~dp0bin\" 2>nul\r\nrd \"%~dp0\" 2>nul\r\nrd \"%LOCALAPPDATA%\\GhitaDownload\" 2>nul\r\nif exist \"%~dp0\" exit /b 1\r\necho Da go bo Ghita khoi he thong thanh cong!\r\npause\r\n",
+        "@echo off\r\nsetlocal\r\npowershell -NoProfile -ExecutionPolicy Bypass -Command \"$dir=[IO.Path]::GetFullPath('{}'); $p=[Environment]::GetEnvironmentVariable('Path','User'); if ($null -eq $p) {{ exit 2 }}; $root=$dir.TrimEnd('\\'); $n=($p -split ';' | Where-Object {{ $cur=$_.Replace('/','\\'); $cur -and $cur.TrimEnd('\\') -ne $root -and $cur.TrimEnd('\\') -ne ($root + '\\bin').TrimEnd('\\') }}) -join ';'; [Environment]::SetEnvironmentVariable('Path',$n,'User')\"\r\nif errorlevel 1 exit /b 1\r\nfor %%F in (\"%~dp0ghita_config.json\" \"%LOCALAPPDATA%\\GhitaDownload\\ghita_config.json\") do if exist %%F del /q %%F 2>nul\r\ndel /q \"%~dp0ghitadownload.exe\" 2>nul\r\ndel /q \"%~dp0ghitadownload.prev.exe\" 2>nul\r\ndel /q \"%~dp0ghita.exe\" 2>nul\r\ndel /q \"%~dp0uninstall.bat\" 2>nul\r\ndel /q \"%~dp0bin\\yt-dlp.exe\" 2>nul\r\ndel /q \"%~dp0bin\\ffmpeg.exe\" 2>nul\r\nrd \"%~dp0bin\" 2>nul\r\nrd \"%~dp0\" 2>nul\r\nrd \"%LOCALAPPDATA%\\GhitaDownload\" 2>nul\r\nif exist \"%~dp0\" exit /b 1\r\necho Da go bo Ghita khoi he thong thanh cong!\r\npause\r\n",
         dir_literal
     )
 }
@@ -379,6 +591,7 @@ fn handle_uninstall(install_dir: &Path) -> Result<(), String> {
     #[cfg(windows)]
     remove_from_user_path(install_dir)?;
     remove_file_if_exists(&install_dir.join("ghitadownload.exe"))?;
+    remove_file_if_exists(&install_dir.join("ghitadownload.prev.exe"))?;
     remove_file_if_exists(&install_dir.join("ghita.exe"))?;
     remove_file_if_exists(&install_dir.join("uninstall.bat"))?;
     remove_file_if_exists(&install_dir.join("bin").join("yt-dlp.exe"))?;
@@ -632,8 +845,8 @@ fn remove_from_user_path(dir: &Path) -> Result<(), String> {
 mod tests {
     use super::{
         append_path_entry, build_uninstall_script, normalize_path_entry, parse_args,
-        path_entry_present, remove_path_entry, uninstall_config_names, validate_install_dir,
-        write_atomic,
+        parse_version_output, path_entry_present, remove_path_entry, rollback_plan,
+        uninstall_config_names, validate_install_dir, write_atomic,
     };
     use std::path::{Path, PathBuf};
 
@@ -642,6 +855,58 @@ mod tests {
         let args = parse_args(["--install-dir", r"D:\Apps\Ghita", "--silent"]).unwrap();
         assert!(args.silent);
         assert_eq!(args.install_dir, Some(PathBuf::from(r"D:\Apps\Ghita")));
+    }
+
+    #[test]
+    fn parses_update_app_and_rollback_flags() {
+        let args = parse_args(["--update-app", "--silent"]).unwrap();
+        assert!(args.update_app);
+        assert!(args.silent);
+        let args = parse_args(["--rollback", "--install-dir", r"D:\Apps\Ghita"]).unwrap();
+        assert!(args.rollback);
+        assert_eq!(args.install_dir, Some(PathBuf::from(r"D:\Apps\Ghita")));
+        assert!(parse_args(["--update-app", "--rollback"]).is_err());
+        assert!(parse_args(["--update-app", "--uninstall"]).is_err());
+        assert!(parse_args(["--rollback", "--uninstall"]).is_err());
+        assert!(parse_args(["--update-app", "--update-app"]).is_err());
+        assert!(parse_args(["--rollback", "--rollback"]).is_err());
+    }
+
+    #[test]
+    fn parse_version_output_extracts_last_whitespace_token() {
+        assert_eq!(
+            parse_version_output("ghitadownload 0.0.6-preview\r\n"),
+            Some("0.0.6-preview".to_string())
+        );
+        assert_eq!(
+            parse_version_output("\nghitadownload 0.0.6\n\n"),
+            Some("0.0.6".to_string())
+        );
+        assert_eq!(parse_version_output("   \r\n"), None);
+    }
+
+    #[test]
+    fn rollback_plan_requires_prev_backup_file() {
+        let dir = std::env::temp_dir().join(format!("ghita_setup_rollback_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("ghitadownload.exe"), b"new").unwrap();
+        assert!(rollback_plan(&dir).is_none());
+        std::fs::write(dir.join("ghitadownload.prev.exe"), b"old").unwrap();
+        let (prev, app) = rollback_plan(&dir).unwrap();
+        assert_eq!(prev, dir.join("ghitadownload.prev.exe"));
+        assert_eq!(app, dir.join("ghitadownload.exe"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn rollback_plan_ignores_prev_directory() {
+        let dir =
+            std::env::temp_dir().join(format!("ghita_setup_rollback_dir_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("ghitadownload.prev.exe")).unwrap();
+        assert!(rollback_plan(&dir).is_none());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

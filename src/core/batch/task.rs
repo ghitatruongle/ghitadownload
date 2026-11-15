@@ -91,6 +91,38 @@ pub(super) async fn process_task(
     let mut search_cache: std::collections::HashMap<String, Option<(String, String)>> =
         std::collections::HashMap::new();
 
+    if settings.duplicate_mode == "skip" && !matches!(settings.format, AudioFormat::Original) {
+        let numbered = if let Some(num) = task.metadata.track_number {
+            if task.metadata.total_tracks.unwrap_or(0) > 1 {
+                format!("{:02}. {}", num, task.display_title)
+            } else {
+                task.display_title.clone()
+            }
+        } else {
+            task.display_title.clone()
+        };
+        let candidate = crate::utils::file_helper::build_output_filename(
+            &out_dir,
+            &numbered,
+            settings.format.file_extension(),
+            settings.keep_accents,
+        );
+        if candidate.is_file() {
+            let note = "Đã tồn tại — bỏ qua (cài đặt trùng lặp: bỏ qua)".to_string();
+            handle.finish_with_message("⏭ Đã tồn tại — bỏ qua");
+            logs.push(format!("    {} {}", "⏭".yellow(), note));
+            return TaskOutcome {
+                ok: true,
+                cancelled: false,
+                logs,
+                task,
+                task_index: index,
+                source_note: Some(note),
+                produced_bytes: 0,
+            };
+        }
+    }
+
     for (attempt_idx, target) in targets.iter().enumerate() {
         if cancel.is_cancelled() {
             handle.finish_with_message("⏸ đã hủy");

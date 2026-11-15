@@ -408,6 +408,12 @@ pub struct DownloadSettings {
     pub raw: bool,
     #[serde(default = "default_fetch_lyrics")]
     pub fetch_lyrics: bool,
+    #[serde(default = "default_duplicate_mode")]
+    pub duplicate_mode: String,
+}
+
+fn default_duplicate_mode() -> String {
+    "rename".to_string()
 }
 
 fn default_fetch_lyrics() -> bool {
@@ -416,6 +422,8 @@ fn default_fetch_lyrics() -> bool {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
+    #[serde(default = "default_duplicate_mode")]
+    pub duplicate_mode: String,
     pub last_output_dir: Option<PathBuf>,
     pub last_format: Option<AudioFormat>,
     pub last_quality: Option<AudioQuality>,
@@ -425,6 +433,8 @@ pub struct AppConfig {
     pub keep_accents: bool,
     #[serde(default = "default_fetch_lyrics")]
     pub fetch_lyrics: bool,
+    #[serde(default = "default_check_updates")]
+    pub check_updates: bool,
     #[serde(default = "default_schema_version")]
     pub schema_version: u32,
 }
@@ -433,8 +443,22 @@ fn default_video_resolution() -> Option<u32> {
     Some(1080)
 }
 
+const CURRENT_SCHEMA_VERSION: u32 = 1;
+
 fn default_schema_version() -> u32 {
-    1
+    CURRENT_SCHEMA_VERSION
+}
+
+fn default_check_updates() -> bool {
+    true
+}
+
+pub fn migrate_schema(version: u32) -> u32 {
+    if version == 0 {
+        CURRENT_SCHEMA_VERSION
+    } else {
+        version
+    }
 }
 
 impl Default for AppConfig {
@@ -444,12 +468,14 @@ impl Default for AppConfig {
             .unwrap_or_else(|| PathBuf::from("./downloads"));
 
         Self {
+            duplicate_mode: default_duplicate_mode(),
             last_output_dir: Some(default_dir),
             last_format: Some(AudioFormat::Mp3),
             last_quality: Some(AudioQuality::Mp3_320k),
             video_resolution: default_video_resolution(),
             keep_accents: false,
             fetch_lyrics: default_fetch_lyrics(),
+            check_updates: default_check_updates(),
             schema_version: default_schema_version(),
         }
     }
@@ -561,6 +587,7 @@ impl AppConfig {
                 return Ok(Self::default());
             }
         };
+        config.schema_version = migrate_schema(config.schema_version);
         if let Some(ref dir) = config.last_output_dir {
             let value = dir.to_string_lossy();
             let cleaned = value.trim().trim_matches(|c| c == '"' || c == '\'').trim();
@@ -592,7 +619,9 @@ impl AppConfig {
                 parent.display()
             )
         })?;
-        let content = serde_json::to_string_pretty(self)
+        let mut snapshot = self.clone();
+        snapshot.schema_version = CURRENT_SCHEMA_VERSION;
+        let content = serde_json::to_string_pretty(&snapshot)
             .map_err(|error| format!("Không chuyển cấu hình sang JSON: {error}"))?;
         let stamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)

@@ -471,6 +471,7 @@ fn test_failed_queue_serde_roundtrip_and_retry() {
         video_resolution: None,
         concurrency: 3,
         keep_accents: false,
+        duplicate_mode: "rename".to_string(),
         cookies_file: None,
         cookies_from_browser: None,
         raw: false,
@@ -549,6 +550,7 @@ fn test_write_manifest_parses_and_counts() {
         video_resolution: None,
         concurrency: 3,
         keep_accents: false,
+        duplicate_mode: "rename".to_string(),
         cookies_file: None,
         cookies_from_browser: None,
         raw: false,
@@ -935,6 +937,7 @@ fn test_write_manifest_records_source_note_per_task() {
         video_resolution: None,
         concurrency: 3,
         keep_accents: false,
+        duplicate_mode: "rename".to_string(),
         cookies_file: None,
         cookies_from_browser: None,
         raw: false,
@@ -1100,4 +1103,20 @@ fn test_decode_html_entities_handles_named_and_numeric() {
         "dấu & bấm ;dư",
         "entity không hợp lệ phải giữ nguyên"
     );
+}
+
+#[test]
+fn test_parse_release_year_from_iso_date_strings() {
+    use ghita_download::core::spotify::parse_release_year;
+
+    assert_eq!(parse_release_year(Some("2023-05-12")), Some(2023));
+    assert_eq!(parse_release_year(Some("2020-03-20T00:00:00Z")), Some(2020));
+    assert_eq!(parse_release_year(Some("2015")), Some(2015));
+    assert_eq!(parse_release_year(Some("2100-01-01")), Some(2100));
+    assert_eq!(parse_release_year(Some("1899-01-01")), None);
+    assert_eq!(parse_release_year(Some("2101-01-01")), None);
+    assert_eq!(parse_release_year(Some("abc-def-ghi")), None);
+    assert_eq!(parse_release_year(Some("18")), None);
+    assert_eq!(parse_release_year(Some("")), None);
+    assert_eq!(parse_release_year(None), None);
 }
