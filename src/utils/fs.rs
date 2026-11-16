@@ -248,7 +248,9 @@ pub fn free_space_warning(free_bytes: u64) -> Option<String> {
 
 #[cfg(test)]
 mod fs_tests_disk {
-    use super::{drive_free_bytes, free_space_warning};
+    #[cfg(windows)]
+    use super::drive_free_bytes;
+    use super::free_space_warning;
 
     #[test]
     fn free_space_warning_only_under_threshold() {
