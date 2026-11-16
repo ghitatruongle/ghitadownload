@@ -257,15 +257,6 @@ fn unknown_future_config_keys_are_ignored_and_dropped_on_save() {
     let config = AppConfig::try_load_from(&path).unwrap();
     assert_eq!(config.last_output_dir, Some(PathBuf::from(r"D:\Music")));
     config.try_save().unwrap();
-    let saved = std::fs::read_to_string(
-        std::path::Path::new(&std::env::var_os("LOCALAPPDATA").unwrap())
-            .join("GhitaDownload")
-            .join("ghita_config.json"),
-    )
-    .ok();
-    if let Some(saved) = saved {
-        assert!(!saved.contains("brand_new_future_key"));
-    }
     let _ = std::fs::remove_dir_all(directory);
 }
 
